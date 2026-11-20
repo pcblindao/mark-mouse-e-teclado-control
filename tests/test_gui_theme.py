@@ -74,8 +74,10 @@ class GuiTests(unittest.TestCase):
         except tk.TclError as exc:
             self.skipTest(str(exc))
         probe.withdraw()
-        probe.destroy()
-        with patch.object(Path, "mkdir"), patch.object(ui_preview, "capture") as capture, \
+        # Reuse the initialized interpreter: global offline mocks must not
+        # interfere with loading another Tcl runtime on Windows runners.
+        with patch.object(ui_preview.tk, "Tk", return_value=probe), \
+                patch.object(Path, "mkdir"), patch.object(ui_preview, "capture") as capture, \
                 patch("socket.socket", side_effect=AssertionError("network")), \
                 patch("threading.Thread.start", side_effect=AssertionError("worker")):
             ui_preview.render(".")
