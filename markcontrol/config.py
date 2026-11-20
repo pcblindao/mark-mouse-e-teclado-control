@@ -77,14 +77,14 @@ class Config:
 
     @staticmethod
     def defaults():
-        return dict(name=socket.gethostname(), clipboard=True, files=True, quality=65, pin=None, devices=[])
+        return dict(name=socket.gethostname(), clipboard=True, files=True, quality=85, pin=None, devices=[])
 
     def read(self):
         cfg = read_json(self.path, None if self.had_file else self.defaults())
         if (not isinstance(cfg, dict) or not valid_name(cfg.get("name"))
                 or type(cfg.get("files", True)) is not bool
                 or type(cfg.get("clipboard")) is not bool or type(cfg.get("quality")) is not int
-                or not 30 <= cfg["quality"] <= 90 or "pin" not in cfg
+                or not 30 <= cfg["quality"] <= 95 or "pin" not in cfg
                 or (cfg["pin"] is not None and (not isinstance(cfg["pin"], str)
                     or not re.fullmatch("[0-9a-f]{32}:[0-9a-f]{64}", cfg["pin"])))
                 or not isinstance(cfg.get("devices"), list)
@@ -125,8 +125,8 @@ class Config:
 
     def save(self, name, clipboard, quality, pin=None, *, files=None):
         # None mantém o PIN atual. String vazia desliga o PIN.
-        if not valid_name(name) or type(clipboard) is not bool or type(quality) is not int or not 30 <= quality <= 90:
-            raise ValueError("Verifique nome e qualidade (30 a 90).")
+        if not valid_name(name) or type(clipboard) is not bool or type(quality) is not int or not 30 <= quality <= 95:
+            raise ValueError("Verifique nome e qualidade (30 a 95).")
         with lock(self.path):
             cfg = self.read()
             if files is not None:

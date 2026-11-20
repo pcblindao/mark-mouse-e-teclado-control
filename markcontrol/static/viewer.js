@@ -137,9 +137,7 @@ function receive(data) {
     select.disabled = false;
     clipboardEnabled = message.clipboard;
     el("paste").disabled = el("copy").disabled = !clipboardEnabled;
-    if (Number(el("quality").value) !== 65 || Number(el("fps").value) !== 12) {
-      updateQuality(false);
-    }
+    updateQuality(false);
   } else if (message.t === "pong" && message.n === pingId && pingAt) {
     latency = Math.round(performance.now() - pingAt);
     pingAt = 0;
@@ -198,6 +196,9 @@ function updateQuality(changeMonitor) {
 
 el("monitor").addEventListener("change", () => updateQuality(true));
 el("quality").addEventListener("change", () => updateQuality(false));
+el("scale").addEventListener("change", () => {
+  el("viewport").classList.toggle("actual", el("scale").value === "actual");
+});
 el("fps").addEventListener("change", () => updateQuality(false));
 el("disconnect").addEventListener("click", () => {
   releaseInput();

@@ -1,5 +1,8 @@
 import asyncio
+import errno
+import ipaddress
 import json
+import os
 import socket
 import time
 from dataclasses import dataclass, field
@@ -12,7 +15,7 @@ from . import capture, clipboard, history, wol
 from .filetransfer import Receiver
 from .certs import tls_identity
 from .config import Config
-from .discovery import PORT, Discovery
+from .discovery import PORT, Discovery, local_addresses
 from .inputctl import Input
 from .security import MAX_MESSAGE, Authorization, Session, _object, decode_message, private_ip, valid_chat
 
@@ -25,6 +28,7 @@ async def local_https(request, handler):
     if not peer or not private_ip(peer[0]) or not request.secure:
         raise web.HTTPForbidden()
     request["peer"] = peer[0]
+    request["scope_id"] = peer[3] if len(peer) == 4 else 0
     if request.path in ("/api/login", "/ws"):
         origin = request.headers.get("Origin")
         # Clientes nativos podem omitir Origin. Navegadores devem usar a própria origem.
@@ -45,6 +49,27 @@ async def local_https(request, handler):
     return response
 
 
+def local_source(peer, scope_id):
+    ip = ipaddress.ip_address(peer)
+    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped:
+        ip = ip.ipv4_mapped
+    if ip.is_loopback:
+        return True
+    if ip.version == 4 and str(ip) in local_addresses():
+        return True
+    # O kernel também conhece endereços secundários e IPv6 com escopo.
+    family = socket.AF_INET if ip.version == 4 else socket.AF_INET6
+    address = (str(ip), 0) if ip.version == 4 else (str(ip), 0, 0, scope_id)
+    with socket.socket(family, socket.SOCK_DGRAM) as probe:
+        try:
+            probe.bind(address)
+        except OSError as exc:
+            if exc.errno == errno.EADDRNOTAVAIL or getattr(exc, "winerror", None) == 10049:
+                return False
+            raise
+    return True
+
+
 @dataclass
 class Control:
     session: Session
@@ -52,8 +77,8 @@ class Control:
     transport: asyncio.Transport
     monitors: int
     monitor: int = 1
-    quality: int = 65
-    fps: int = 12
+    quality: int = 85
+    fps: int = 15
     region: dict | None = None
     revision: int = 0
     view_only: bool = False
@@ -87,6 +112,10 @@ class Agent:
         self.control = None
 
     async def login(self, request):
+        if os.getenv("MARKCONTROL_DEV_LOOPBACK") != "1" and await asyncio.to_thread(
+            local_source, request["peer"], request.get("scope_id", 0)
+        ):
+            return web.json_response({"error": "Não dá para controlar o próprio PC"}, status=403)
         if request.content_type != "application/json":
             return web.json_response({"error": "Envie JSON."}, status=415)
         try:

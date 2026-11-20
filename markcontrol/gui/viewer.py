@@ -2,7 +2,7 @@ import threading
 import time
 import tkinter as tk
 from queue import Empty
-from tkinter import filedialog
+from tkinter import filedialog, ttk
 
 from PIL import ImageTk
 
@@ -80,7 +80,8 @@ class Viewer(tk.Toplevel):
         self.status = tk.StringVar(value="Conectando…")
         self.stats = tk.StringVar()
         self.q = tk.StringVar(value=str(cfg["quality"]))
-        self.fps = tk.StringVar(value="12")
+        self.fps = tk.StringVar(value="15")
+        self.scale_mode = tk.StringVar(value="Ajustar à janela")
         self.monitor = tk.StringVar(value="1")
         self.local_clip = cfg["clipboard"]
         self.clip = self.pending_copy = False
@@ -105,6 +106,8 @@ class Viewer(tk.Toplevel):
         label(pc, peer.name[:28], face="MarkStrong").pack(side="left")
         tk.Frame(pc, bg="#3a4c5e", width=1, height=u(17)).pack(side="left", padx=u(11))
         label(pc, textvariable=self.stats, color=MUTED, face="MarkSmall").pack(side="left")
+        Selector(pc, "Escala", self.scale_mode, ("Ajustar à janela", "Tamanho real"),
+                 self.change_scale, 180).pack(side="left", padx=u(4))
         actions = tk.Frame(bar, bg=bar_color, padx=u(3))
         actions.grid(row=0, column=2, sticky="e")
         tk.Frame(actions, bg="#3a4c5e", width=1, height=u(34)).pack(side="left", padx=(0, u(10)))
@@ -124,8 +127,8 @@ class Viewer(tk.Toplevel):
         selectors = tk.Frame(bar, bg=bar_color)
         selectors.grid(row=0, column=1, sticky="e", padx=u(8))
         for caption, var, choices, width in (
-            ("Qualidade", self.q, sorted({30, cfg["quality"], 65, 90}), 116),
-            ("FPS", self.fps, (1, 5, 12, 20), 78), ("Monitor", self.monitor, (1,), 99),
+            ("Qualidade", self.q, sorted({30, cfg["quality"], 65, 85, 90, 95}), 116),
+            ("FPS", self.fps, (1, 5, 12, 15, 20), 78), ("Monitor", self.monitor, (1,), 99),
         ):
             select = Selector(selectors, caption, var, choices, lambda v=var: self.quality(v is self.monitor), width)
             select.pack(side="left", padx=(u(7), 0))
@@ -142,6 +145,9 @@ class Viewer(tk.Toplevel):
         self.dialog = None
         self.canvas = tk.Canvas(screen, bg="#10151e", bd=0, highlightthickness=0, takefocus=True)
         self.canvas.pack(expand=True, fill="both")
+        self.horizontal = ttk.Scrollbar(screen, orient="horizontal", command=self.canvas.xview)
+        self.vertical = ttk.Scrollbar(screen, orient="vertical", command=self.canvas.yview)
+        self.canvas.configure(xscrollcommand=self.horizontal.set, yscrollcommand=self.vertical.set)
         notice = label(self.canvas, textvariable=self.status, color=MUTED, face="MarkSmall",
                        wraplength=u(510), justify="left")
         def status_changed(*_):
@@ -270,7 +276,7 @@ class Viewer(tk.Toplevel):
         self.online = False
         self.client = Client(self.peer)
         self.refresh_tools()
-        self.client.target = (self.canvas.winfo_width(), self.canvas.winfo_height())
+        self.configure_canvas()
         self.client.start(pin, retrust)
 
     def card(self, title, detail, warning=False, secret=False):
@@ -417,10 +423,11 @@ class Viewer(tk.Toplevel):
         if not self.photo or getattr(self, "view_only", False):
             return
         left, top, right, bottom = self.canvas.bbox(self.item)
-        if not self.buttons and not (left <= e.x < right and top <= e.y < bottom):
+        x, y = self.canvas.canvasx(e.x), self.canvas.canvasy(e.y)
+        if not self.buttons and not (left <= x < right and top <= y < bottom):
             return
-        self.pos = dict(x=min(1, max(0, (e.x-left)/max(1, right-left-1))),
-                        y=min(1, max(0, (e.y-top)/max(1, bottom-top-1))))
+        self.pos = dict(x=min(1, max(0, (x-left)/max(1, right-left-1))),
+                        y=min(1, max(0, (y-top)/max(1, bottom-top-1))))
         msg = dict(t=kind, **self.pos)
         if b:
             self.canvas.focus_set()
@@ -446,13 +453,36 @@ class Viewer(tk.Toplevel):
         self.photo = None
         self.canvas.itemconfigure(self.item, image="")
 
-    def configure_canvas(self, event):
-        self.client.target = (max(1, event.width), max(1, event.height))
-        self.canvas.coords(self.item, event.width//2, event.height//2)
+    def change_scale(self):
+        if self.scale_mode.get() == "Tamanho real":
+            self.horizontal.pack(side="bottom", fill="x", before=self.canvas)
+            self.vertical.pack(side="right", fill="y", before=self.canvas)
+        else:
+            self.horizontal.pack_forget()
+            self.vertical.pack_forget()
+        self.configure_canvas()
+        self.canvas.focus_set()
+
+    def configure_canvas(self, event=None):
+        w, h = self.canvas.winfo_width(), self.canvas.winfo_height()
+        if self.scale_mode.get() == "Tamanho real":
+            self.client.target = None
+            self.canvas.itemconfigure(self.item, anchor="nw")
+            self.canvas.coords(self.item, 0, 0)
+            self.canvas.configure(scrollregion=self.canvas.bbox(self.item))
+        else:
+            self.client.target = (w, h)
+            self.canvas.itemconfigure(self.item, anchor="center")
+            self.canvas.coords(self.item, w//2, h//2)
+            self.canvas.configure(scrollregion=(0, 0, w, h))
+            self.canvas.xview_moveto(0)
+            self.canvas.yview_moveto(0)
 
     def draw(self, frame):
         self.photo = ImageTk.PhotoImage(frame, master=self)
         self.canvas.itemconfigure(self.item, image=self.photo)
+        if self.client.target is None:
+            self.canvas.configure(scrollregion=(0, 0, frame.width, frame.height))
 
     def message(self, m):
         kind = m["t"]

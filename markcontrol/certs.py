@@ -81,14 +81,26 @@ def _generate(path, host, extra):
             temp_path.unlink(missing_ok=True)
 
 
+def _read_certificate(identity):
+    pem = identity.read_bytes().split(b"-----BEGIN PRIVATE KEY-----", 1)[0]
+    return x509.load_pem_x509_certificate(pem)
+
+
+def local_fingerprint():
+    try:
+        cert = _read_certificate(data_dir() / "identity.pem")
+    except FileNotFoundError:
+        return None
+    return cert.fingerprint(hashes.SHA256()).hex(":")
+
+
 def tls_identity(host, extra):
     directory = data_dir()
     directory.mkdir(parents=True, exist_ok=True, mode=0o700)
     identity = directory / "identity.pem"
     if not identity.exists():
         _generate(identity, host, extra)
-    pem = identity.read_bytes().split(b"-----BEGIN PRIVATE KEY-----", 1)[0]
-    certificate = x509.load_pem_x509_certificate(pem)
+    certificate = _read_certificate(identity)
     if certificate.not_valid_after_utc <= datetime.now(timezone.utc):
         raise ValueError("Certificado expirado. Consulte a seção HTTPS do README.")
     names = certificate.extensions.get_extension_for_class(x509.SubjectAlternativeName).value

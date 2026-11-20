@@ -33,9 +33,11 @@ def prepare_frame(data, target):
     with Image.open(BytesIO(data), formats=["JPEG"]) as frame:
         if frame.width * frame.height > 32_000_000:
             raise ValueError("Quadro grande demais.")
+        if target is None or (frame.width <= target[0] and frame.height <= target[1]):
+            return frame.convert("RGB")
         scale = min(target[0] / frame.width, target[1] / frame.height)
         size = tuple(max(1, round(n * scale)) for n in frame.size)
-        image = frame.resize(size, Image.Resampling.BILINEAR)
+        image = frame.resize(size, Image.Resampling.LANCZOS, reducing_gap=3.0)
         return image if image.mode == "RGB" else image.convert("RGB")
 
 
@@ -230,6 +232,12 @@ class Client:
                 body = {}
             async with http.post(f"https://{base}/api/login", json=body, ssl=fingerprint,
                                  allow_redirects=False) as response:
+                if response.status == 403 and response.content_type == "application/json":
+                    length = response.content_length
+                    if length is not None and 0 < length <= 1024:
+                        detail = json.loads(await response.content.readexactly(length))
+                        if detail == {"error": "Não dá para controlar o próprio PC"}:
+                            raise ValueError(detail["error"])
                 if response.status == 401:
                     raise NeedPin("Informe o PIN para parear este PC.")
                 if response.status != 200:

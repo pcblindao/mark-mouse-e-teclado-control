@@ -27,14 +27,15 @@ class Request(dict):
     content_type = "application/json"
 
     def __init__(self, body):
-        super().__init__(peer="192.168.0.8")
+        super().__init__(peer="127.0.0.1")
         self.body = json.dumps(body)
 
     async def json(self, loads):
         return loads(self.body)
 
 
-def test_login_and_pairing(tmp_path):
+def test_login_and_pairing(tmp_path, monkeypatch):
+    monkeypatch.setenv("MARKCONTROL_DEV_LOOPBACK", "1")
     cfg = Config(tmp_path)
     agent = SimpleNamespace(control=None, auth=Authorization(cfg.authenticate))
 
@@ -45,7 +46,7 @@ def test_login_and_pairing(tmp_path):
 
     token = login({}, 200)["token"]
     assert agent.auth.claim("192.168.0.9", token) is None
-    assert agent.auth.claim("192.168.0.8", token).alive()
+    assert agent.auth.claim("127.0.0.1", token).alive()
     login(None, 401)
     login({"extra": True}, 401)
     cfg.save("Oficina", False, 75, "12345678")
@@ -191,7 +192,7 @@ def test_config_cache_and_recovery(tmp_path, monkeypatch):
     cfg.path.write_bytes(damaged)
     reopened = Config(tmp_path)
     defaults = reopened.refresh(warnings.append, opening=True)
-    assert defaults["quality"] == 65 and defaults["review_required"]
+    assert defaults["quality"] == 85 and defaults["review_required"]
     assert (tmp_path / "config.json.bad").read_bytes() == damaged
     assert reopened.authenticate({}) is None
     reopened.save("PC", False, 65, "12345678")
@@ -216,7 +217,8 @@ def test_client_frame_and_tk_draw(monkeypatch):
     Image.new("RGB", (200, 100)).save(data, "JPEG")
     frame = client.prepare_frame(data.getvalue(), (90, 60))
     assert frame.size == (90, 45)
-    ui = SimpleNamespace(canvas=SimpleNamespace(itemconfigure=lambda *a, **kw: None), item=1)
+    ui = SimpleNamespace(canvas=SimpleNamespace(itemconfigure=lambda *a, **kw: None), item=1,
+                         client=SimpleNamespace(target=(90, 60)))
     monkeypatch.setattr(viewer.ImageTk, "PhotoImage", lambda image, master: image)
     monkeypatch.setattr(Image.Image, "resize", lambda *a, **kw: pytest.fail("resize no Tk"))
     Viewer.draw(ui, frame)
@@ -280,12 +282,16 @@ def test_scan_uses_padded_requests_and_groups_responses(monkeypatch, capsys):
     alternate = "172.16.0.1"
     main = "192.168.100.1"
     other = FP.replace("ab", "cd")
+    local = FP.replace("ab", "ef")
+    monkeypatch.setattr(discovery, "local_fingerprint", lambda: local)
 
     def send(data, target):
         assert data == REQUEST and target[1] == PORT
         events.append(target[0])
         if target[0] == main:
             incoming.extend([(packet(), (main, PORT)),
+                             (packet(fingerprint=local), ("172.16.0.7", PORT)),
+                             (packet(fingerprint=FP.replace("ab", "aa")), ("192.168.100.2", PORT)),
                              (packet(fingerprint=other), ("192.168.100.9", PORT))])
         if target[0] == "192.168.100.3":
             incoming.extend([(packet(busy=True), (alternate, PORT)),

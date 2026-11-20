@@ -8,6 +8,7 @@ import time
 from contextlib import contextmanager
 from dataclasses import dataclass
 
+from .certs import local_fingerprint
 from .config import valid_name
 from .security import private_ip
 
@@ -288,7 +289,10 @@ def scan_cycle(timeout, broadcast):
             sock.settimeout(remaining)
             if not receive(sock, replies, 1):
                 break
-    return primary, replies
+    fingerprint = local_fingerprint()
+    return primary, {ip: entry for ip, entry in replies.items()
+                     if ip not in addresses and not ip.startswith("127.")
+                     and entry[1].fingerprint != fingerprint}
 
 
 def scan(timeout, broadcast, *, with_routes=False):

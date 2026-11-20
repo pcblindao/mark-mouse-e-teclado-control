@@ -152,7 +152,7 @@ RULES = {
     "key": ("k d", lambda m: isinstance(m["k"], str)
             and m["k"] in KEYS and m["d"] in ("down", "up")),
     "text": ("s", lambda m: _text(m["s"])),
-    "quality": ("q fps monitor", lambda m: _integer(m["q"], 30, 90)
+    "quality": ("q fps monitor", lambda m: _integer(m["q"], 30, 95)
                 and _integer(m["fps"], 1, 20) and _integer(m["monitor"], 1, 256)),
     "ping": ("n", lambda m: _integer(m["n"], 0, 2**31 - 1)),
     "clip_set": ("s", lambda m: _clipboard(m["s"])),

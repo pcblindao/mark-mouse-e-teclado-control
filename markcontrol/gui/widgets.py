@@ -290,23 +290,23 @@ class Slider(tk.Canvas):
             self.bind(event, self.draw)
         for event in ("<Button-1>", "<B1-Motion>"):
             self.bind(event, self.drag)
-        for key, step in (("Left", -1), ("Right", 1), ("Home", -60), ("End", 60)):
+        for key, step in (("Left", -1), ("Right", 1), ("Home", -65), ("End", 65)):
             self.bind(f"<{key}>", lambda _, s=step: self.set(self.value.get()+s))
 
     def set(self, value):
-        self.value.set(max(30, min(90, round(value))))
+        self.value.set(max(30, min(95, round(value))))
         self.draw()
         return "break"
 
     def drag(self, event):
         self.focus_set()
         r = px(self, 8)
-        self.set(30 + 60 * (event.x-r)/max(1, self.winfo_width()-2*r))
+        self.set(30 + 65 * (event.x-r)/max(1, self.winfo_width()-2*r))
 
     def draw(self, _=None):
         self.delete("all")
         r, w, h = px(self, 8), self.winfo_width(), self.winfo_height()/2
-        x = r + max(0, w-2*r)*(self.value.get()-30)/60
+        x = r + max(0, w-2*r)*(self.value.get()-30)/65
         for end, color in ((w-2, "#35495c"), (x, CYAN)):
             self.create_line(2, h, end, h, fill=color, width=px(self, 6), capstyle="round")
         self.create_oval(x-r, h-r, x+r, h+r, fill="#a9edf8", width=px(self, 2),

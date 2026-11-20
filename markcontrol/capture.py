@@ -26,5 +26,5 @@ def frame(monitor, quality, previous, force):
         return monitor, count, region, identity, None
     with Image.frombytes("RGB", shot.size, pixels, "raw", "BGRX") as image:
         with BytesIO() as buffer:
-            image.save(buffer, "JPEG", quality=quality)
+            image.save(buffer, "JPEG", quality=quality, subsampling=0, optimize=False)
             return monitor, count, region, identity, buffer.getvalue()

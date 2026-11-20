@@ -15,13 +15,11 @@ class GuiTests(unittest.TestCase):
         self.assertIs(viewer.feature_method(client, ["files"], "send_file"), client.send_file)
         self.assertIsNone(viewer.feature_method(client, ["chat"], "send_chat"))
 
-    def test_session_blocks_both_hide_paths(self):
-        ui = SimpleNamespace(root=Mock(), session_ip="192.168.1.2")
-        app.App.hide(ui)
+    def test_minimize_during_session_uses_hide(self):
+        ui = SimpleNamespace(root=Mock(), session_ip="192.168.1.2", hide=Mock())
+        ui.root.state.return_value = "iconic"
         app.App.on_unmap(ui)
-        self.assertEqual(ui.root.deiconify.call_count, 2)
-        ui.root.withdraw.assert_not_called()
-        ui.root.iconify.assert_not_called()
+        ui.hide.assert_called_once()
 
     def test_tray_fallback_and_single_notice(self):
         ui = SimpleNamespace(root=Mock(), tray=Mock(), session_ip="", notified=False)

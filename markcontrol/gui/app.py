@@ -29,6 +29,7 @@ class App:
         self.found = SimpleQueue()
         self.done = threading.Event()
         self.session_ip = ""
+        self.strip = None
         root.bind("<Unmap>", self.keep_visible)
         self.active = False
         self.fingerprint = ""
@@ -261,7 +262,7 @@ class App:
         Slider(form, quality).pack(fill="x")
         limits = tk.Frame(form, bg=BG)
         limits.pack(fill="x")
-        for value, side in (("30", "left"), ("90", "right")):
+        for value, side in (("30", "left"), ("95", "right")):
             label(limits, value, color=MUTED, face="MarkSmall").pack(side=side)
         tk.Frame(form, bg=LINE, height=1).pack(fill="x", pady=(u(8), 0))
         option("Ativar ao iniciar o " + ("Windows" if sys.platform == "win32" else "sistema"), auto)
@@ -330,7 +331,7 @@ class App:
             started = time.monotonic()
             try:
                 self.found.put(scan_cycle(1.2, "255.255.255.255"))
-            except OSError as exc:
+            except (OSError, ValueError) as exc:
                 self.found.put(str(exc))
             self.done.wait(max(0, 3 - (time.monotonic()-started)))
 
@@ -412,15 +413,32 @@ class App:
             self.root.after_idle(self.on_unmap)
 
     def on_unmap(self):
-        if self.session_ip:
-            self.root.deiconify()
-        elif self.root.state() == "iconic" and self.tray.ready.is_set():
+        if self.root.state() == "iconic" and (self.session_ip or self.tray.ready.is_set()):
             self.hide()
+
+    def clear_strip(self):
+        if self.strip is not None:
+            self.strip.destroy()
+            self.strip = None
 
     def hide(self):
         if self.session_ip:
-            self.root.deiconify()
-            self.root.lift()
+            if self.strip is None:
+                strip = self.strip = tk.Toplevel(self.root, bg=RED, padx=8, pady=3)
+                strip.withdraw()
+                strip.overrideredirect(True)
+                strip.attributes("-topmost", True)
+                strip.protocol("WM_DELETE_WINDOW", self.runner.stop)
+                label(strip, f"Controlado por {self.session_ip} · Ctrl+Alt+Shift+Q",
+                      color="white").pack(side="left", padx=5)
+                Button(strip, "Encerrar", self.runner.stop, 80).pack(side="left")
+                Button(strip, "Abrir", lambda: self.tray_action("open"), 60).pack(side="left")
+                strip.update_idletasks()
+                x = max(0, (strip.winfo_screenwidth() - strip.winfo_reqwidth()) // 2)
+                strip.geometry(f"+{x}+0")
+                strip.deiconify()
+                strip.lift()
+            self.root.withdraw()
         elif self.tray.ready.is_set():
             if not self.notified:
                 self.notified = True
@@ -448,8 +466,9 @@ class App:
                 threading.Thread(target=self.discover, daemon=True).start()
             self.root.deiconify()
             self.root.lift()
+            self.clear_strip()
         elif action == "unavailable":
-            if not self.headless and self.root.state() == "withdrawn":
+            if self.strip is None and not self.headless and self.root.state() == "withdrawn":
                 self.root.deiconify()
                 if not self.session_ip:
                     self.root.iconify()
@@ -487,6 +506,10 @@ class App:
             self.root.attributes("-topmost", False)
             self.root.title("Mark Mouse e Teclado Control")
             self.banner.pack_forget()
+            if self.strip is not None and not self.headless and not self.tray.ready.is_set():
+                self.root.deiconify()
+                self.root.iconify()
+            self.clear_strip()
             if self.headless:
                 self.root.withdraw()
 
