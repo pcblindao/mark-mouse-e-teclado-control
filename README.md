@@ -26,9 +26,9 @@
   <a href="#perguntas-frequentes">Perguntas frequentes</a>
 </p>
 
-O aplicativo encontra PCs na rede local e permite ver a tela de outro PC e usar o mouse e o teclado dele. A conexão fica na sua rede. O aplicativo dispensa conta e funciona sem servidores externos ou telemetria.
+O aplicativo encontra PCs na rede local e permite ver a tela de outro PC e usar o mouse e o teclado dele. A conexão fica na sua rede. O controle dispensa conta. O envio opcional de diagnósticos usa um receptor HTTPS do MKT com Marcos.
 
-Em **Configurações → Enviar diagnóstico**, você pode revisar um resumo técnico e abrir um relato no GitHub. O envio é opcional e exige confirmar o relato na sua conta do GitHub; o relato é público. Não há envio automático em segundo plano.
+No primeiro uso, você pode autorizar **Enviar diagnósticos automaticamente** quando ocorrer uma falha. Recusar mantém todos os recursos. A opção pode ser desligada nas Configurações, apagando a fila local pendente. O receptor encaminha os diagnósticos para relatos públicos no GitHub, sem exigir conta do usuário. Também existe a alternativa manual com revisão em **Configurações → Enviar diagnóstico**.
 
 > [!IMPORTANT]
 > Use apenas em PCs próprios ou com autorização do responsável, em uma rede sob seu controle. O PIN vem desligado. Enquanto o controle estiver ativado sem PIN, qualquer aparelho da rede local pode se conectar.
@@ -225,7 +225,7 @@ Telas protegidas, como a confirmação do UAC no Windows, e atalhos que o sistem
 
 O aplicativo registra diagnósticos técnicos localmente: versão, sistema, eventos da janela/bandeja e tipo/localização de algumas falhas. Esses diagnósticos não incluem mensagens de exceção, caminhos completos, nomes de PCs, IPs, PINs, teclas digitadas, imagens da tela, arquivos transferidos ou conteúdo da área de transferência. O registro local da área de transferência guarda o tipo e o tamanho da operação; o conteúdo fica fora do registro.
 
-No Windows, os diagnósticos ficam em `%LOCALAPPDATA%\MarkControl\logs`; no Linux, em `$XDG_DATA_HOME/markcontrol/logs` (por padrão, `~/.local/share/markcontrol/logs`). Há até quatro arquivos de 256 KiB, com substituição dos mais antigos. **Configurações → Enviar diagnóstico** permite revisar um resumo dos eventos recentes antes de abrir um relato público no GitHub. É necessário entrar no GitHub e clicar em **Submit new issue** para enviar. O app não contém credenciais do GitHub e não envia logs automaticamente.
+No Windows, os diagnósticos ficam em `%LOCALAPPDATA%\MarkControl\logs`; no Linux, em `$XDG_DATA_HOME/markcontrol/logs` (por padrão, `~/.local/share/markcontrol/logs`). Há até quatro arquivos de 256 KiB, com substituição dos mais antigos. **Configurações → Enviar diagnóstico** permite revisar um resumo dos eventos recentes antes de abrir um relato público no GitHub. É necessário entrar no GitHub e clicar em **Submit new issue** para enviar. O app não contém credenciais do GitHub. Com autorização, uma fila de até 50 eventos técnicos é enviada em lotes que incluam uma falha; sem internet, tenta novamente. O receptor guarda os registros por até 30 dias após a última ocorrência; relatos no GitHub permanecem públicos. Desligar o envio apaga a fila e impede novos lotes; uma requisição já em andamento pode terminar. Consulte a [página do app e privacidade](https://mktcommarcos.com.br/aplicacoes/mark-mouse-e-teclado-control/#privacidade).
 
 </details>
 

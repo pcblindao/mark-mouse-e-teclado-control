@@ -61,6 +61,8 @@ def event(name, error=None):
             for frame in traceback.extract_tb(error.__traceback__)[-12:]
         ]
     logger.info(json.dumps(record, ensure_ascii=True))
+    from .telemetry import enqueue
+    enqueue(record)
 
 
 def setup(directory=None):

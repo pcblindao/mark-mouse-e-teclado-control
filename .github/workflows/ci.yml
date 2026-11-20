@@ -33,9 +33,13 @@ jobs:
         with:
           python-version: "3.12"
       - run: ./scripts/build.ps1
-      - name: Confere que o executável abre a janela principal
+      - name: Confere que o executável abre e continua executando ao recolher
         shell: pwsh
         run: |
+          $env:LOCALAPPDATA = Join-Path $env:RUNNER_TEMP 'markcontrol-smoke'
+          $configDir = Join-Path $env:LOCALAPPDATA 'MarkControl'
+          New-Item -ItemType Directory -Path $configDir -Force | Out-Null
+          '{"version":1,"enabled":false}' | Set-Content (Join-Path $configDir 'diagnostic-consent.json') -Encoding ascii
           $exe = (Resolve-Path 'dist\Mark Mouse e Teclado Control.exe').Path
           $launcher = Start-Process -FilePath $exe -PassThru
           try {
@@ -49,8 +53,9 @@ jobs:
                   Start-Sleep -Milliseconds 250
               } while ((Get-Date) -lt $deadline)
               if (-not $window) { throw 'A janela principal do Mark Mouse e Teclado Control não abriu.' }
-              if (-not $window.CloseMainWindow() -or -not $launcher.WaitForExit(15000) -or
-                  $launcher.ExitCode -ne 0) { throw 'A janela do Mark Mouse e Teclado Control não encerrou corretamente.' }
+              if (-not $window.CloseMainWindow()) { throw 'A janela não aceitou o pedido de recolher.' }
+              Start-Sleep -Milliseconds 1500
+              if ($launcher.HasExited) { throw 'O aplicativo encerrou ao recolher a janela.' }
           } finally {
               if (-not $launcher.HasExited) {
                   taskkill /PID $launcher.Id /T /F | Out-Null

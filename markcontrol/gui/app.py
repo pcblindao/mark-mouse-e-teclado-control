@@ -9,7 +9,7 @@ import webbrowser
 from queue import Empty, SimpleQueue
 from tkinter import messagebox
 
-from .. import diagnostics, updater
+from .. import diagnostics, telemetry, updater
 from ..version import __version__
 from ..agent_runner import AgentRunner
 from ..config import Config
@@ -62,6 +62,25 @@ class App:
             self.main_window()
             threading.Thread(target=self.discover, daemon=True).start()
         root.after(50, self.poll)
+        if not self.headless:
+            root.after(500, self.diagnostic_consent)
+
+    def diagnostic_consent(self):
+        if telemetry.preference() is not None or self.done.is_set():
+            return
+        choice = messagebox.askyesnocancel(
+            "Ajudar a melhorar o aplicativo",
+            "Autoriza enviar diagnósticos técnicos automaticamente quando ocorrer uma falha?\n\n"
+            "Inclui versão, sistema e eventos técnicos recentes. Não inclui teclas, tela, PIN, "
+            "arquivos ou área de transferência. O serviço do Marcos encaminhará os relatos "
+            "ao GitHub, onde serão públicos. Não é preciso ter conta no GitHub.\n\n"
+            "Você pode desligar o envio nas Configurações. Recusar mantém todos os recursos do app.",
+            parent=self.root, default=messagebox.NO)
+        if choice is not None:
+            try:
+                telemetry.set_preference(choice)
+            except OSError:
+                self.status.set("Não foi possível salvar a autorização. Envio automático desativado.")
 
     def main_window(self):
         root = self.root
@@ -228,6 +247,7 @@ class App:
         clip = tk.BooleanVar(value=cfg["clipboard"])
         protected = tk.BooleanVar(value=cfg["pin"] is not None)
         updates = tk.BooleanVar(value=cfg.get("auto_update", True))
+        diagnostic_auto = tk.BooleanVar(value=telemetry.preference() is True)
         auto = tk.BooleanVar(value=autostart.enabled())
 
         def option(title, var, command=None):
@@ -249,6 +269,9 @@ class App:
         tk.Frame(form, bg=LINE, height=1).pack(fill="x")
         option("Permitir copiar e colar", clip)
         option("Atualizar sozinho", updates)
+        option("Enviar diagnósticos automaticamente", diagnostic_auto)
+        label(form, "Somente com autorização. Relatos técnicos públicos no GitHub.",
+              color=MUTED, face="MarkSmall", wraplength=u(325), justify="left").pack(anchor="w")
         qrow = tk.Frame(form, bg=BG)
         qrow.pack(fill="x", pady=(u(9), 0))
         label(qrow, "Qualidade", face="MarkStrong").pack(side="left")
@@ -278,6 +301,7 @@ class App:
                         raise ValueError("Defina um PIN de oito dígitos.")
                     pin = None
                 self.config.save(name.get(), clip.get(), quality.get(), pin, auto_update=updates.get())
+                telemetry.set_preference(diagnostic_auto.get())
                 cfg = self.config.refresh(self.warning.set)
                 self.warning.set("")
                 self.name.set(name.get())
@@ -469,6 +493,7 @@ class App:
                 if self.active and sys.platform == "win32":
                     self.check_public_network()
                 threading.Thread(target=self.discover, daemon=True).start()
+                self.root.after(500, self.diagnostic_consent)
             self.root.deiconify()
             self.root.lift()
         elif action == "unavailable":
@@ -565,6 +590,7 @@ def launch(args, headless, auto):
     raw = os.environ.pop(updater.RESUME, None)
     state = json.loads(raw) if raw and target else None
     app = App(root, args, state["headless"] if state else headless)
+    diagnostic_sender = telemetry.Sender()
     if target:
         app.update_monitor = updater.Monitor(target, bool(state))
     if state:
@@ -574,6 +600,7 @@ def launch(args, headless, auto):
     try:
         root.mainloop()
     finally:
+        diagnostic_sender.stop()
         if app.update_monitor:
             app.update_monitor.stop()
         app.close()
