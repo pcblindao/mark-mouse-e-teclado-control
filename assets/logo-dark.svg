@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title desc">
+  <title id="title">Mark Mouse e Teclado Control</title>
+  <desc id="desc">Monitor com cursor em forma de avião de papel e ondas de rede.</desc>
+  <g fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="63" y="107" width="282" height="184" rx="26" stroke="#FFFFFF" stroke-width="20"/>
+    <path d="M204 291v42m-56 0h112" stroke="#FFFFFF" stroke-width="20"/>
+    <path d="M420 104a43 43 0 0 1 8 50m17-65a70 70 0 0 1 13 81" stroke="#1FB6D5" stroke-width="13"/>
+  </g>
+  <path d="M221 154 394 76l-53 155-45-50-35 21 7-43z" fill="#1FB6D5" stroke="#fff" stroke-width="14" stroke-linejoin="round"/>
+  <path d="m221 154 173-78-53 155-45-50-35 21 7-43z" fill="none" stroke="#FFFFFF" stroke-width="8" stroke-linejoin="round"/>
+  <path d="m268 159 93-60-65 82-35 21z" fill="#FFFFFF"/>
+  <text fill="#FFFFFF" text-anchor="middle" font-family="Segoe UI, Arial, sans-serif" font-size="40" font-weight="700">
+    <tspan x="256" y="405">Mark Mouse e Teclado</tspan>
+    <tspan x="256" y="462">Control</tspan>
+  </text>
+</svg>

@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mark-mouse-e-teclado-control"
+version = "0.1.0"
+description = "Controle remoto de computadores na rede local"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {file = "LICENSE"}
+dynamic = ["dependencies"]
+
+[project.optional-dependencies]
+test = ["pytest>=7"]
+build = ["pyinstaller>=6,<7"]
+
+[project.scripts]
+markcontrol = "markcontrol.cli:main"
+
+[tool.setuptools.dynamic]
+dependencies = {file = ["requirements.txt"]}
+
+[tool.setuptools.packages.find]
+include = ["markcontrol*"]
+namespaces = false
+
+[tool.setuptools.package-data]
+markcontrol = ["static/*.html", "static/*.js", "static/*.css"]

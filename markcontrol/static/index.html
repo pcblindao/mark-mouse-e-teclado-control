@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Mark Mouse e Teclado Control</title>
+  <link rel="stylesheet" href="/style.css">
+  <script src="/viewer.js" defer></script>
+</head>
+<body>
+  <header><h1>Mark Mouse e Teclado Control</h1><output id="status" aria-live="polite"></output></header>
+  <main>
+    <form id="login">
+      <label for="pin">PIN (se ativado)</label>
+      <input id="pin" type="password" inputmode="numeric" maxlength="8"
+             pattern="[0-9]{8}" autocomplete="off" autofocus>
+      <button id="connect">Conectar</button>
+    </form>
+    <section id="viewer" aria-label="Controle remoto" hidden>
+      <div class="toolbar">
+        <label>Monitor <select id="monitor"></select></label>
+        <label>Qualidade <select id="quality">
+          <option value="30">Baixa</option>
+          <option value="65" selected>Média</option>
+          <option value="90">Alta</option>
+        </select></label>
+        <label>FPS máximo <select id="fps">
+          <option>1</option><option>5</option><option>10</option>
+          <option selected>12</option><option>15</option><option>20</option>
+        </select></label>
+        <button id="typeText">Digitar texto</button>
+        <button id="paste" disabled>Colar no remoto</button>
+        <button id="copy" disabled>Copiar do remoto</button>
+        <button id="disconnect">Desconectar</button>
+        <output id="stats" aria-label="Quadros por segundo e latência"></output>
+      </div>
+      <canvas id="screen" width="1" height="1" tabindex="0" aria-label="Tela remota. Clique para controlar."></canvas>
+    </section>
+  </main>
+  <dialog id="textDialog">
+    <form method="dialog">
+      <label for="text">Texto para digitar no remoto</label>
+      <textarea id="text" maxlength="500" rows="5" autofocus></textarea>
+      <button id="sendText" type="button">Enviar</button>
+      <button value="cancel">Cancelar</button>
+    </form>
+  </dialog>
+</body>
+</html>

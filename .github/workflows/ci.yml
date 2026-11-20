@@ -1,0 +1,58 @@
+name: Mark Mouse e Teclado Control
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  pytest:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+        python: ["3.10", "3.11", "3.12"]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - run: python -m pip install ".[test]"
+      - run: markcontrol --help
+      - run: python -m pytest -q
+
+  windows-exe:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: ./scripts/build.ps1
+      - name: Confere que o executável abre a janela principal
+        shell: pwsh
+        run: |
+          $exe = (Resolve-Path 'dist\Mark Mouse e Teclado Control.exe').Path
+          $launcher = Start-Process -FilePath $exe -PassThru
+          try {
+              $deadline = (Get-Date).AddSeconds(60)
+              do {
+                  $window = Get-Process -Name 'Mark Mouse e Teclado Control' -ErrorAction SilentlyContinue |
+                      Where-Object { $_.Path -eq $exe -and
+                                     $_.MainWindowTitle -eq 'Mark Mouse e Teclado Control' } |
+                      Select-Object -First 1
+                  if ($window -or $launcher.HasExited) { break }
+                  Start-Sleep -Milliseconds 250
+              } while ((Get-Date) -lt $deadline)
+              if (-not $window) { throw 'A janela principal do Mark Mouse e Teclado Control não abriu.' }
+              if (-not $window.CloseMainWindow() -or -not $launcher.WaitForExit(15000) -or
+                  $launcher.ExitCode -ne 0) { throw 'A janela do Mark Mouse e Teclado Control não encerrou corretamente.' }
+          } finally {
+              if (-not $launcher.HasExited) {
+                  taskkill /PID $launcher.Id /T /F | Out-Null
+              }
+          }
