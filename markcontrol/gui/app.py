@@ -5,13 +5,15 @@ import sys
 import threading
 import time
 import tkinter as tk
+import webbrowser
 from queue import Empty, SimpleQueue
 from tkinter import messagebox
 
-from .. import updater
+from .. import diagnostics, updater
 from ..version import __version__
 from ..agent_runner import AgentRunner
 from ..config import Config
+from ..diagnostics import event
 from ..discovery import MAX_PEERS, grouped_peers, scan_cycle
 from . import autostart, network
 from .icons import install_icon
@@ -24,6 +26,7 @@ from .widgets import Badge, Button, Card, PeerList, Scroll, Slider, Switch, bran
 class App:
     def __init__(self, root, args, headless):
         self.root, self.args, self.headless = root, args, headless
+        root.report_callback_exception = self.callback_error
         self.config = Config()
         self.runner = AgentRunner()
         self.peers = {}
@@ -300,6 +303,7 @@ class App:
                     report(str(exc))
 
         Button(form, "Esquecer aparelhos", forget, 147, fill=BG, ink="#e1b8bc").pack(anchor="w", pady=(u(8), 0))
+        Button(form, "Enviar diagnóstico", self.show_diagnostics, 160, fill=BG).pack(anchor="w", pady=(u(8), 0))
         if self.fingerprint:
             label(form, "SHA-256  " + self.fingerprint, color=MUTED, wraplength=px(form, 330),
                   justify="left").pack(anchor="w")
@@ -412,19 +416,47 @@ class App:
 
     def hide(self):
         if self.tray.ready.is_set():
+            self.root.withdraw()
+            event("window_hidden_in_tray")
             if not self.session_ip and not self.notified:
                 self.notified = True
                 if self.tray.icon.HAS_NOTIFICATION:
                     try:
                         self.tray.icon.notify("continua rodando na bandeja", TITLE)
-                    except (OSError, NotImplementedError):
-                        messagebox.showinfo(TITLE, "continua rodando na bandeja", parent=self.root)
-                else:
-                    messagebox.showinfo(TITLE, "continua rodando na bandeja", parent=self.root)
-            if self.tray.ready.is_set():
-                self.root.withdraw()
+                    except Exception as exc:
+                        event("tray_notification_failed", exc)
         else:
             self.root.iconify()
+            event("window_minimized_without_tray")
+
+    def show_diagnostics(self):
+        details = diagnostics.report()
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Enviar diagnóstico")
+        dialog.geometry("620x440")
+        dialog.configure(bg=BG)
+        label(dialog, "Revise os dados antes de compartilhar.", face="MarkStrong").pack(padx=16, pady=12)
+        label(dialog, "O GitHub abrirá no navegador. Entre na sua conta e confirme o relato.\n"
+              "O relato será público. Acrescente uma descrição do problema.",
+              color=MUTED, justify="left").pack(padx=16, pady=6)
+        text = tk.Text(dialog, wrap="word", bg=FIELD, fg=TEXT, height=12)
+        text.insert("1.0", details)
+        text.configure(state="disabled")
+        text.pack(fill="both", expand=True, padx=16, pady=8)
+
+        def send():
+            try:
+                if not webbrowser.open(diagnostics.issue_url(details)):
+                    raise OSError("browser unavailable")
+            except Exception as exc:
+                event("diagnostic_browser_failed", exc)
+                messagebox.showerror(TITLE, "Não foi possível abrir o navegador. Tente novamente.", parent=dialog)
+
+        Button(dialog, "Continuar no GitHub", send, 180).pack(pady=12)
+
+    def callback_error(self, kind, value, tb):
+        event("ui_callback_failed", value.with_traceback(tb))
+        self.status.set("Ocorreu uma falha. O diagnóstico foi registrado neste PC.")
 
     def tray_action(self, action):
         if action == "ready":

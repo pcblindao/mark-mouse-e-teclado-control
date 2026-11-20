@@ -6,6 +6,7 @@ import sys
 
 from .discovery import scan
 from .security import private_ip
+from .diagnostics import event, setup
 
 
 def address(value):
@@ -71,6 +72,7 @@ def prepare_desktop():
 
 
 def main(argv=None):
+    setup()
     parser = argparse.ArgumentParser(prog="markcontrol")
     parser.add_argument("--autostart", action="store_true", help=argparse.SUPPRESS)
     commands = parser.add_subparsers(dest="command")
@@ -106,6 +108,7 @@ def main(argv=None):
     except KeyboardInterrupt:
         return 0
     except Exception as exc:
+        event("startup_failed", exc)
         print(f"Mark Mouse e Teclado Control: {exc}", file=sys.stderr)
         return 2
     return 0

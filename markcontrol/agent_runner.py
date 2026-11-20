@@ -1,6 +1,7 @@
 import asyncio
 import threading
 from queue import SimpleQueue
+from .diagnostics import event
 
 
 class AgentRunner:
@@ -19,6 +20,7 @@ class AgentRunner:
                 from .server import run
                 asyncio.run(run(args, self.stopping, lambda *event: self.events.put(event)))
             except Exception as exc:
+                event("agent_failed", exc)
                 self.events.put(("error", str(exc)))
             finally:
                 self.events.put(("off", ""))

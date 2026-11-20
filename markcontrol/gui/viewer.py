@@ -7,6 +7,7 @@ from tkinter import filedialog, ttk
 from PIL import ImageTk
 
 from ..client import Client
+from ..diagnostics import event
 from ..clipboard import check_text
 from ..security import KEYS
 from .icons import install_icon
@@ -205,6 +206,7 @@ class Viewer(tk.Toplevel):
             try:
                 return function(*args) is not False
             except (OSError, RuntimeError, ValueError) as exc:
+                event("remote_operation_failed", exc)
                 self.status.set(str(exc))
         return False
 
@@ -252,6 +254,7 @@ class Viewer(tk.Toplevel):
             try:
                 method(path, progress)
             except Exception as exc:
+                event("file_transfer_failed", exc)
                 self.progress = client, f"Falha no envio: {exc}"
 
         self.status.set("Enviando arquivo…")

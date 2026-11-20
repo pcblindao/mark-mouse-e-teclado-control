@@ -4,6 +4,7 @@ from contextlib import closing
 
 from .icons import logo
 from .theme import TITLE
+from ..diagnostics import event
 
 
 class Tray:
@@ -30,9 +31,9 @@ class Tray:
                         MenuItem("Sair", lambda: self.post("exit")))
             self.icon = Icon("markcontrol", self.images[self.session], TITLE, menu)
             self.icon.run(self.setup)
-        except Exception:
+        except Exception as exc:
             # Backend opcional, inclusive em desktops sem área de notificação.
-            pass
+            event("tray_failed", exc)
         finally:
             self.ready.clear()
             self.post("unavailable")
@@ -49,6 +50,7 @@ class Tray:
             if sys.platform == "win32":
                 icon.visible = True
                 self.ready.set()
+                event("tray_ready")
                 self.post("ready")
                 self.finished.wait()
             else:
@@ -76,7 +78,8 @@ class Tray:
             try:
                 self.icon.icon = self.images[self.session]
                 self.icon.update_menu()
-            except Exception:
+            except Exception as exc:
+                event("tray_update_failed", exc)
                 self.ready.clear()
                 self.finished.set()
                 self.post("unavailable")
