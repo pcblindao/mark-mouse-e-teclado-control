@@ -2,15 +2,16 @@ import threading
 import time
 import tkinter as tk
 from queue import Empty
-from tkinter import filedialog, ttk
+from tkinter import filedialog
 
 from PIL import ImageTk
 
 from ..client import Client
 from ..clipboard import check_text
 from ..security import KEYS
+from .icons import install_icon
 from .theme import AMBER, BG, CYAN, FIELD, MUTED, PANEL, TEXT, px
-from .widgets import Button, Card, label
+from .widgets import Button, Card, Selector, entry_field, icon, label
 
 FEATURES = {
     "send_file": ("file", "files", "file_transfer", "send_file"),
@@ -61,6 +62,7 @@ def protocol_key(keysym, char=""):
 class Viewer(tk.Toplevel):
     def __init__(self, parent, peer, cfg):
         super().__init__(parent)
+        install_icon(self)
         self.peer = peer
         self.title(f"Mark Mouse e Teclado Control · {peer.name} · {peer.ip}")
         self.geometry(f"{px(self, 1040)}x{px(self, 650)}")
@@ -88,41 +90,67 @@ class Viewer(tk.Toplevel):
         self.rtt = "—"
         self.tick = time.monotonic()
         self.pos = dict(x=0.5, y=0.5)
-        bar = tk.Frame(self, bg=BG, padx=6, pady=px(self, 8))
+        u = lambda n: px(self, n)
+        shell = Card(self, 650, BG, "#2c4052", pad=(4, 3), radius=14, shadow=True)
+        shell.configure(bg="#0f1720")
+        shell.pack(fill="both", expand=True)
+        screen = shell.body
+        bar_color = "#162331"
+        bar = tk.Frame(screen, bg=bar_color, padx=u(9), pady=u(8))
         bar.pack(fill="x")
-        actions = tk.Frame(bar, bg=BG)
-        actions.pack(side="right")
-        for icon, title, action in (
+        bar.columnconfigure(0, weight=1)
+        pc = tk.Frame(bar, bg=bar_color)
+        pc.grid(row=0, column=0, sticky="w")
+        icon(pc, "monitor", "#91d8e7").pack(side="left", padx=(0, u(8)))
+        label(pc, peer.name[:28], face="MarkStrong").pack(side="left")
+        tk.Frame(pc, bg="#3a4c5e", width=1, height=u(17)).pack(side="left", padx=u(11))
+        label(pc, textvariable=self.stats, color=MUTED, face="MarkSmall").pack(side="left")
+        actions = tk.Frame(bar, bg=bar_color, padx=u(3))
+        actions.grid(row=0, column=2, sticky="e")
+        tk.Frame(actions, bg="#3a4c5e", width=1, height=u(34)).pack(side="left", padx=(0, u(10)))
+        for symbol, title, action in (
             ("paste", "Colar no remoto", self.paste), ("copy", "Copiar do remoto", self.copy),
             ("type", "Digitar texto", self.type_text), ("file", "Enviar arquivo", self.send_file),
             ("eye", "Somente ver", self.toggle_view), ("keys", "Teclas especiais", self.special_keys),
             ("chat", "Mensagem", self.chat), ("full", "Tela cheia · F11", self.toggle_fullscreen),
             ("exit", "Desconectar", self.destroy),
         ):
-            button = Button(actions, icon, action, 32, tip=title,
-                            fill="#45242c" if icon == "exit" else BG,
-                            ink="#ffadb6" if icon == "exit" else TEXT)
-            button.pack(side="left", padx=1)
-            self.tools[icon] = button, title
-        selectors = tk.Frame(bar, bg=BG)
-        selectors.pack(side="right", padx=3)
-        label(bar, peer.name).pack(side="left", fill="x", expand=True)
-        label(bar, textvariable=self.stats, color=MUTED, face="TkSmallCaptionFont").pack(side="right")
-        for caption, var, choices in (("Qualidade", self.q, sorted({30, cfg["quality"], 65, 90})),
-                                    ("FPS", self.fps, (1, 5, 12, 20)), ("Monitor", self.monitor, (1,))):
-            group = tk.Frame(selectors, bg=BG)
-            group.pack(side="left", padx=2)
-            ttk.Label(group, text=caption, font="TkSmallCaptionFont").pack()
-            select = ttk.Combobox(group, width=3, textvariable=var, values=choices, state="readonly")
-            select.pack(side="left")
-            select.bind("<<ComboboxSelected>>", lambda _, v=var: self.quality(v is self.monitor))
+            button = Button(actions, symbol, action, 34, tip=title,
+                            fill="#45242c" if symbol == "exit" else bar_color,
+                            edge="#774048" if symbol == "exit" else bar_color,
+                            ink="#ffadb6" if symbol == "exit" else TEXT)
+            button.pack(side="left", padx=(u(5), 0))
+            self.tools[symbol] = button, title
+        selectors = tk.Frame(bar, bg=bar_color)
+        selectors.grid(row=0, column=1, sticky="e", padx=u(8))
+        for caption, var, choices, width in (
+            ("Qualidade", self.q, sorted({30, cfg["quality"], 65, 90}), 116),
+            ("FPS", self.fps, (1, 5, 12, 20), 78), ("Monitor", self.monitor, (1,), 99),
+        ):
+            select = Selector(selectors, caption, var, choices, lambda v=var: self.quality(v is self.monitor), width)
+            select.pack(side="left", padx=(u(7), 0))
             if var is self.monitor:
                 self.monitors = select
-        self.dialog = Card(self, 210)
-        self.prompt = self.dialog.body
-        ttk.Label(self, textvariable=self.status).pack(anchor="w")
-        self.canvas = tk.Canvas(self, bg="#10151e", highlightthickness=0, takefocus=True)
+
+        def fit(event):
+            narrow = event.width < pc.winfo_reqwidth()+selectors.winfo_reqwidth()+actions.winfo_reqwidth()+u(42)
+            pc.grid_configure(columnspan=2 if narrow else 1)
+            selectors.grid_configure(row=int(narrow), column=0 if narrow else 1, sticky="w" if narrow else "e")
+            actions.grid_configure(row=int(narrow), column=2)
+        bar.bind("<Configure>", fit)
+        tk.Frame(screen, bg="#2c4052", height=1).pack(fill="x")
+        self.dialog = None
+        self.canvas = tk.Canvas(screen, bg="#10151e", bd=0, highlightthickness=0, takefocus=True)
         self.canvas.pack(expand=True, fill="both")
+        notice = label(self.canvas, textvariable=self.status, color=MUTED, face="MarkSmall",
+                       wraplength=u(510), justify="left")
+        def status_changed(*_):
+            if self.status.get() in ("", "Conectado"):
+                notice.place_forget()
+            else:
+                notice.place(x=u(8), y=u(8))
+        self.status.trace_add("write", status_changed)
+        status_changed()
         self.item = self.canvas.create_image(0, 0)
         self.canvas.bind("<Configure>", self.configure_canvas)
         self.canvas.bind("<Motion>", lambda e: self.pointer(e, "move"))
@@ -156,8 +184,13 @@ class Viewer(tk.Toplevel):
             button, title = self.tools[icon]
             button.tip = title if allowed or icon in ("paste", "copy", "type") else title + " · em breve"
             button.enabled = allowed and not (icon == "keys" and self.view_only)
+            if icon in ("file", "eye", "keys", "chat"):
+                if allowed:
+                    button.pack(before=self.tools["full"][0], side="left", padx=(px(self, 5), 0))
+                else:
+                    button.pack_forget()
             if icon == "eye":
-                button.fill = "#215f49" if self.view_only else BG
+                button.fill = "#215f49" if self.view_only else "#162331"
             button.draw()
 
     def optional(self, method, *args):
@@ -225,9 +258,9 @@ class Viewer(tk.Toplevel):
             self.after_cancel(self.timer)
 
     def clear_prompt(self):
-        self.dialog.place_forget()
-        for widget in self.prompt.winfo_children():
-            widget.destroy()
+        if self.dialog is not None:
+            self.dialog.destroy()
+            self.dialog = None
 
     def connect(self, pin=None, retrust=False):
         self.clear_prompt()
@@ -240,47 +273,88 @@ class Viewer(tk.Toplevel):
         self.client.target = (self.canvas.winfo_width(), self.canvas.winfo_height())
         self.client.start(pin, retrust)
 
-    def card(self, title, detail, warning=False):
+    def card(self, title, detail, warning=False, secret=False):
         self.clear_prompt()
-        self.dialog.outline = AMBER if warning else "#31576b"
-        self.dialog.place(relx=.5, rely=.5, anchor="center", width=px(self, 435), height=px(self, 214))
-        tk.Misc.lift(self.dialog)
-        label(self.prompt, title, face="TkHeadingFont", color=AMBER if warning else TEXT).pack(anchor="w")
-        label(self.prompt, detail, color=MUTED, justify="left", wraplength=px(self, 395)).pack(anchor="w", pady=5)
+        dialog = self.dialog = tk.Toplevel(self)
+        dialog.withdraw()
+        install_icon(dialog)
+        dialog.title(title)
+        if self.winfo_viewable():
+            dialog.transient(self)
+        dialog.protocol("WM_DELETE_WINDOW", self.destroy if warning or secret else self.clear_prompt)
+        dialog.resizable(False, False)
+        width = 480 if warning else 360
+        card = Card(dialog, 180, BG, "#735936" if warning else "#2c4052",
+                    pad=(17, 17), radius=14, shadow=True)
+        card.configure(width=px(self, width), bg="#0f1720")
+        card.pack(fill="both", expand=True)
+        self.prompt = card.body
+        head = tk.Frame(self.prompt, bg=BG)
+        head.pack(fill="x", pady=(0, px(self, 12)))
+        icon(head, "shield" if warning else "lock" if secret else "type",
+             AMBER if warning else "#8adcf0", plate=37,
+             fill="#3c3022" if warning else None, edge="#695232" if warning else None).pack(
+                 side="left", anchor="n", padx=(0, px(self, 11)))
+        words = tk.Frame(head, bg=BG)
+        words.pack(side="left", fill="x", expand=True)
+        label(words, title, face="MarkDialog").pack(anchor="w")
+        label(words, detail, face="MarkDetail", color=MUTED, justify="left",
+              wraplength=px(self, width-84)).pack(anchor="w", pady=(px(self, 4), 0))
+
+    def show_card(self):
+        dialog = self.dialog
+        dialog.update_idletasks()
+        width = dialog.winfo_reqwidth()
+        height = self.prompt.winfo_reqheight()+px(self, 41)
+        x = max(0, min(self.winfo_screenwidth()-width, self.winfo_rootx()+(self.winfo_width()-width)//2))
+        y = max(0, min(self.winfo_screenheight()-height, self.winfo_rooty()+(self.winfo_height()-height)//2))
+        dialog.geometry(f"{width}x{height}+{x}+{y}")
+        dialog.deiconify()
+        dialog.lift()
 
     def entry(self, caption, callback, secret=False):
         self.card("Digite o PIN" if secret else caption,
-                  f"O PC {self.peer.name[:48]} exige um PIN para conectar." if secret else self.peer.name)
+                  f"O PC {self.peer.name[:48]} exige um PIN para conectar." if secret else self.peer.name,
+                  secret=secret)
         if secret:
-            label(self.prompt, "PIN de 8 dígitos").pack(anchor="w")
-        field = ttk.Entry(self.prompt, show="•" if secret else "")
-        field.pack(fill="x")
-        field.focus_set()
+            label(self.prompt, "PIN de 8 dígitos", face="MarkStrong").pack(anchor="w", pady=(0, px(self, 6)))
+        field = entry_field(self.prompt, show="•" if secret else "",
+                            placeholder="•  •  •  •  •  •  •  •" if secret else "")
+        error = label(self.prompt, color=AMBER, face="MarkSmall")
 
         def submit(*_):
             value = field.get()
             if secret and not (len(value) == 8 and value.isascii() and value.isdigit()):
-                self.status.set("Informe oito dígitos para o PIN.")
+                error.configure(text="Informe oito dígitos para o PIN.")
+                error.pack(before=actions, anchor="w")
+                self.show_card()
                 return
             field.delete(0, "end")
             callback(value)
 
         field.bind("<Return>", submit)
-        actions = tk.Frame(self.prompt, bg=PANEL)
-        actions.pack(side="bottom", anchor="e")
-        Button(actions, "Cancelar", self.destroy if secret else self.clear_prompt).pack(side="left", padx=4)
-        Button(actions, caption, submit, 135, fill=CYAN, ink=FIELD).pack(side="left")
+        actions = tk.Frame(self.prompt, bg=BG)
+        actions.pack(anchor="e", pady=(px(self, 12), 0))
+        Button(actions, "Cancelar", self.destroy if secret else self.clear_prompt, 82, fill=BG).pack(
+            side="left", padx=(0, px(self, 8)))
+        Button(actions, caption, submit, 120, fill=CYAN, ink="#08232e").pack(side="left")
+        self.show_card()
+        field.focus_set()
 
     def identity(self, peer):
         self.card("Este PC mudou de identidade",
                   f"Compare o código abaixo com o exibido no PC {peer.name[:48]} antes de continuar.", True)
-        label(self.prompt, "SHA-256  " + peer.fingerprint, wraplength=px(self, 395),
-              justify="left", face="TkSmallCaptionFont").pack(fill="x")
-        actions = tk.Frame(self.prompt, bg=PANEL)
-        actions.pack(side="bottom", anchor="e")
-        Button(actions, "Cancelar", self.destroy).pack(side="left", padx=4)
-        Button(actions, "Confiar de novo", lambda: self.connect(retrust=True), 130,
-               fill=AMBER, ink=FIELD).pack(side="left")
+        digest = Card(self.prompt, 45, FIELD, "#354653", pad=(10, 4), radius=10)
+        digest.pack(fill="x")
+        label(digest.body, "SHA-256", face="MarkBadge", color=MUTED).pack(side="left", padx=(0, px(self, 8)))
+        label(digest.body, peer.fingerprint.replace(":", ""), wraplength=px(self, 361),
+              color="#dce6ed", justify="left", face="MarkDigest").pack(side="left")
+        actions = tk.Frame(self.prompt, bg=BG)
+        actions.pack(anchor="e", pady=(px(self, 12), 0))
+        Button(actions, "Cancelar", self.destroy, 82, fill=BG).pack(side="left", padx=(0, px(self, 8)))
+        Button(actions, "Confiar de novo", lambda: self.connect(retrust=True), 124,
+               fill="#ffda85", ink="#33240f").pack(side="left")
+        self.show_card()
 
     def type_text(self):
         if self.photo and not self.view_only:
@@ -391,7 +465,7 @@ class Viewer(tk.Toplevel):
             self.release()
             self.blank()
             self.waiting = None
-            self.monitors.configure(values=tuple(range(1, count+1)))
+            self.monitors.choices = tuple(range(1, count+1))
             self.monitor.set(str(current))
             self.clip = self.local_clip and m["clipboard"] is True
             self.online = True

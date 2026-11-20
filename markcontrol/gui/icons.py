@@ -32,6 +32,9 @@ def install_icon(root):
             photo = ImageTk.PhotoImage(image, master=root)
     else:
         photo = ImageTk.PhotoImage(logo(64), master=root)
-    root.iconphoto(True, photo)
+    root._mark_icon = photo
+    root.iconphoto(root is root._root(), photo)
     if sys.platform == "win32" and ico.is_file():
-        root.iconbitmap(default=str(ico))
+        if root is root._root():
+            root.iconbitmap(default=str(ico))
+        root.iconbitmap(str(ico))

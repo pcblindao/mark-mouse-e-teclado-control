@@ -33,7 +33,20 @@ def install(root):
     for name, size, weight in (("TkDefaultFont", 10, "normal"), ("TkTextFont", 10, "normal"),
                                ("TkHeadingFont", 13, "bold"), ("TkSmallCaptionFont", 9, "normal")):
         tkfont.nametofont(name, root=root).configure(family=family, size=size, weight=weight)
-    root.option_add("*Font", "TkDefaultFont")
+    # CSS uses pixels. Negative Tk font sizes are device pixels.
+    families = tkfont.families(root)
+    for name, size, bold in (
+        ("Body", 14, False), ("Strong", 14, True), ("Title", 18, True),
+        ("Activation", 21, True), ("Section", 16, True), ("Sheet", 19, True),
+        ("Dialog", 17, True), ("Empty", 15, True), ("Small", 12, False),
+        ("Badge", 12, True), ("Button", 13, True), ("Detail", 13, False),
+        ("Digest", 11, False),
+    ):
+        weight = "bold" if bold else "normal"
+        face = "Segoe UI Semibold" if bold and size <= 14 and "Segoe UI Semibold" in families else family
+        root.tk.call("font", "create", "Mark" + name, "-family", face,
+                     "-size", -px(root, size), "-weight", "normal" if face != family else weight)
+    root.option_add("*Font", "MarkBody")
     root.configure(bg=BG)
     style = ttk.Style(root)
     style.theme_use("clam")
