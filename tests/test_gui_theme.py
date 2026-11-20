@@ -16,10 +16,21 @@ class GuiTests(unittest.TestCase):
         self.assertIsNone(viewer.feature_method(client, ["chat"], "send_chat"))
 
     def test_minimize_during_session_uses_hide(self):
-        ui = SimpleNamespace(root=Mock(), session_ip="192.168.1.2", hide=Mock())
+        ui = app.App.__new__(app.App)
+        ui.root, ui.tray, ui.done = Mock(), Mock(), threading.Event()
+        ui.session_ip = "192.168.1.2"
         ui.root.state.return_value = "iconic"
-        app.App.on_unmap(ui)
-        ui.hide.assert_called_once()
+        ui.root.after_idle.side_effect = lambda callback: callback()
+        ui.queue_minimize(SimpleNamespace(widget=Mock()))
+        ui.root.after_idle.assert_not_called()
+        ui.tray.ready.is_set.return_value = False
+        ui.queue_minimize(SimpleNamespace(widget=ui.root))
+        ui.root.iconify.assert_not_called()
+        ui.root.withdraw.assert_not_called()
+        ui.tray.ready.is_set.return_value = True
+        ui.queue_minimize(SimpleNamespace(widget=ui.root))
+        ui.root.withdraw.assert_called_once()
+        ui.root.deiconify.assert_not_called()
 
     def test_tray_fallback_and_single_notice(self):
         ui = SimpleNamespace(root=Mock(), tray=Mock(), session_ip="", notified=False)
@@ -105,9 +116,13 @@ class GuiTests(unittest.TestCase):
             ui = viewer.Viewer(root, peer, {"quality": 65, "clipboard": True})
             ui.withdraw()
             ui.entry("Entrar com PIN", Mock(), True)
+            self.assertEqual(ui.dialog.title(), f"{app.TITLE} · Digite o PIN")
+            self.assertTrue(ui.dialog._mark_icon)
+            self.assertTrue(ui.title().startswith(app.TITLE))
+            self.assertTrue(ui._mark_icon)
             ui.identity(peer)
             self.assertIsInstance(ui.dialog, tk.Toplevel)
-            self.assertEqual(ui.dialog.title(), "Este PC mudou de identidade")
+            self.assertEqual(ui.dialog.title(), f"{app.TITLE} · Este PC mudou de identidade")
             self.assertTrue(ui.dialog._mark_icon)
             self.assertFalse(ui.tools["file"][0].enabled)
             ui.destroy()

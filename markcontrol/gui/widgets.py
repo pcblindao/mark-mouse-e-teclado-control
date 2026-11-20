@@ -2,7 +2,7 @@ from math import cos, pi, sin
 import tkinter as tk
 from tkinter import font, ttk
 
-from .theme import AMBER, BG, CYAN, GREEN, LINE, MUTED, PANEL, TEXT, px
+from .theme import AMBER, BG, CYAN, GREEN, LINE, MUTED, PANEL, TEXT, TITLE, px
 
 
 def label(parent, text="", *, color=TEXT, face="MarkBody", **kw):
@@ -164,6 +164,7 @@ class Button(tk.Canvas):
         if inside and self.tip:
             tip = self.tip_window = tk.Toplevel(self)
             tip.withdraw()
+            tip.title(TITLE)
             tip.overrideredirect(True)
             tk.Label(tip, text=self.tip() if callable(self.tip) else self.tip, bg="#263d50", fg=TEXT, padx=6, pady=3).pack()
             tip.update_idletasks()

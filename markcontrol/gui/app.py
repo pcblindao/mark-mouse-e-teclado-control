@@ -1,3 +1,4 @@
+import ctypes
 import json
 import os
 import sys
@@ -14,7 +15,7 @@ from ..config import Config
 from ..discovery import MAX_PEERS, grouped_peers, scan_cycle
 from . import autostart, network
 from .icons import install_icon
-from .theme import AMBER, BG, CYAN, FIELD, GREEN, LINE, MUTED, RED, TEXT, TITLE, enable_dpi, install, px
+from .theme import AMBER, BG, CYAN, FIELD, GREEN, LINE, MUTED, TEXT, TITLE, enable_dpi, install, px
 from .tray import Tray
 from .viewer import Viewer
 from .widgets import Badge, Button, Card, PeerList, Scroll, Slider, Switch, brand, entry_field, icon, label
@@ -32,8 +33,7 @@ class App:
         self.found = SimpleQueue()
         self.done = threading.Event()
         self.session_ip = ""
-        self.strip = None
-        root.bind("<Unmap>", self.keep_visible)
+        root.bind("<Unmap>", self.queue_minimize, add=True)
         self.active = False
         self.fingerprint = ""
         self.error = ""
@@ -45,7 +45,7 @@ class App:
         self.name = tk.StringVar(value=cfg["name"])
         self.status = tk.StringVar()
         self.hint = tk.StringVar()
-        root.title("Mark Mouse e Teclado Control")
+        root.title(TITLE)
         install(root)
         install_icon(root)
         self.pending = self.notified = False
@@ -53,14 +53,6 @@ class App:
         self.updated = False
         self.update_monitor = None
         root.protocol("WM_DELETE_WINDOW", self.hide)
-        self.banner = Card(root, 92, RED, "#e17682", pad=(14, 10), radius=14)
-        banner = self.banner.body
-        icon(banner, "warning", "#ffffff").pack(side="left", padx=(0, px(root, 11)))
-        Button(banner, "Encerrar agora", self.runner.stop, 110,
-               fill="#ffe3e6", ink="#651626").pack(side="right")
-        self.banner_text = label(banner, wraplength=px(root, 294), justify="left",
-                                 color="#ffffff", face="MarkButton")
-        self.banner_text.pack(side="left", fill="x", expand=True)
         if self.headless:
             root.withdraw()
         else:
@@ -410,39 +402,17 @@ class App:
 
         threading.Thread(target=check, daemon=True).start()
 
-    def keep_visible(self, event):
+    def queue_minimize(self, event):
         if event.widget is self.root and not self.done.is_set():
             self.root.after_idle(self.on_unmap)
 
     def on_unmap(self):
-        if self.root.state() == "iconic" and (self.session_ip or self.tray.ready.is_set()):
+        if not self.done.is_set() and self.root.state() == "iconic" and self.tray.ready.is_set():
             self.hide()
 
-    def clear_strip(self):
-        if self.strip is not None:
-            self.strip.destroy()
-            self.strip = None
-
     def hide(self):
-        if self.session_ip:
-            if self.strip is None:
-                strip = self.strip = tk.Toplevel(self.root, bg=RED, padx=8, pady=3)
-                strip.withdraw()
-                strip.overrideredirect(True)
-                strip.attributes("-topmost", True)
-                strip.protocol("WM_DELETE_WINDOW", self.runner.stop)
-                label(strip, f"Controlado por {self.session_ip} · Ctrl+Alt+Shift+Q",
-                      color="white").pack(side="left", padx=5)
-                Button(strip, "Encerrar", self.runner.stop, 80).pack(side="left")
-                Button(strip, "Abrir", lambda: self.tray_action("open"), 60).pack(side="left")
-                strip.update_idletasks()
-                x = max(0, (strip.winfo_screenwidth() - strip.winfo_reqwidth()) // 2)
-                strip.geometry(f"+{x}+0")
-                strip.deiconify()
-                strip.lift()
-            self.root.withdraw()
-        elif self.tray.ready.is_set():
-            if not self.notified:
+        if self.tray.ready.is_set():
+            if not self.session_ip and not self.notified:
                 self.notified = True
                 if self.tray.icon.HAS_NOTIFICATION:
                     try:
@@ -451,7 +421,7 @@ class App:
                         messagebox.showinfo(TITLE, "continua rodando na bandeja", parent=self.root)
                 else:
                     messagebox.showinfo(TITLE, "continua rodando na bandeja", parent=self.root)
-            if not self.session_ip and self.tray.ready.is_set():
+            if self.tray.ready.is_set():
                 self.root.withdraw()
         else:
             self.root.iconify()
@@ -459,6 +429,7 @@ class App:
     def tray_action(self, action):
         if action == "ready":
             self.tray.update(self.active, self.session_ip)
+            self.on_unmap()
         elif action == "open":
             if self.headless:
                 self.headless = False
@@ -468,12 +439,9 @@ class App:
                 threading.Thread(target=self.discover, daemon=True).start()
             self.root.deiconify()
             self.root.lift()
-            self.clear_strip()
         elif action == "unavailable":
-            if self.strip is None and not self.headless and self.root.state() == "withdrawn":
-                self.root.deiconify()
-                if not self.session_ip:
-                    self.root.iconify()
+            if not self.headless and self.root.state() == "withdrawn":
+                self.root.iconify()
         elif action == "toggle":
             self.toggle_agent()
         elif action == "exit":
@@ -487,33 +455,12 @@ class App:
             menu.tk_popup(*self.root.winfo_pointerxy())
 
     def session(self, ip):
+        # Uso doméstico: sem aviso na tela. Só o ícone da bandeja fica vermelho.
         self.session_ip = ip
         self.tray.update(self.active, ip)
         if not self.headless:
             self.render_update()
-        if ip:
-            title = f"Mark Mouse e Teclado Control · SESSÃO ATIVA de {ip} — Ctrl+Alt+Shift+Q encerra"
-            self.root.title(title)
-            self.banner_text.configure(text=f"Este PC está sendo controlado por {ip} — Ctrl+Alt+Shift+Q encerra")
-            if self.headless:
-                self.root.geometry(f"{px(self.root, 480)}x{px(self.root, 92)}")
-                self.banner.pack(fill="both", expand=True)
-            else:
-                self.banner.pack(before=self.shell, fill="x")
-            self.root.deiconify()
-            self.root.attributes("-topmost", True)
-            self.root.lift()
-            self.root.bell()
-        else:
-            self.root.attributes("-topmost", False)
-            self.root.title("Mark Mouse e Teclado Control")
-            self.banner.pack_forget()
-            if self.strip is not None and not self.headless and not self.tray.ready.is_set():
-                self.root.deiconify()
-                self.root.iconify()
-            self.clear_strip()
-            if self.headless:
-                self.root.withdraw()
+        self.root.title(TITLE)
 
     def poll(self):
         try:
@@ -527,8 +474,6 @@ class App:
                 elif kind == "warning":
                     self.warning.set(value)
                     if self.headless:
-                        if self.session_ip:
-                            self.banner_text.configure(text=f"{self.root.title()}\n{value}")
                         print(value, file=sys.stderr)
                 elif kind == "error":
                     self.error = value
@@ -573,8 +518,17 @@ class App:
 
 
 def launch(args, headless, auto):
+    if sys.platform == "win32":
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("Marcos.MarkMouseTecladoControl")
+        kernel = ctypes.windll.kernel32
+        pid = ctypes.c_ulong()
+        if kernel.GetConsoleProcessList(ctypes.byref(pid), 1) == 1 and pid.value == os.getpid():
+            kernel.GetConsoleWindow.restype = ctypes.c_void_p
+            hwnd = kernel.GetConsoleWindow()
+            if hwnd:
+                ctypes.windll.user32.ShowWindow(ctypes.c_void_p(hwnd), 0)
     enable_dpi()
-    root = tk.Tk()
+    root = tk.Tk(className=TITLE)
     target = updater.installed()
     raw = os.environ.pop(updater.RESUME, None)
     state = json.loads(raw) if raw and target else None

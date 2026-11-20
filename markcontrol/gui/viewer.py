@@ -10,7 +10,7 @@ from ..client import Client
 from ..clipboard import check_text
 from ..security import KEYS
 from .icons import install_icon
-from .theme import AMBER, BG, CYAN, FIELD, MUTED, PANEL, TEXT, px
+from .theme import AMBER, BG, CYAN, FIELD, MUTED, PANEL, TEXT, TITLE, px
 from .widgets import Button, Card, Selector, entry_field, icon, label
 
 FEATURES = {
@@ -64,7 +64,7 @@ class Viewer(tk.Toplevel):
         super().__init__(parent)
         install_icon(self)
         self.peer = peer
-        self.title(f"Mark Mouse e Teclado Control · {peer.name} · {peer.ip}")
+        self.title(f"{TITLE} · {peer.name} · {peer.ip}")
         self.geometry(f"{px(self, 1040)}x{px(self, 650)}")
         self.minsize(px(self, 620), px(self, 360))
         self.configure(bg=BG)
@@ -284,7 +284,7 @@ class Viewer(tk.Toplevel):
         dialog = self.dialog = tk.Toplevel(self)
         dialog.withdraw()
         install_icon(dialog)
-        dialog.title(title)
+        dialog.title(f"{TITLE} · {title}")
         if self.winfo_viewable():
             dialog.transient(self)
         dialog.protocol("WM_DELETE_WINDOW", self.destroy if warning or secret else self.clear_prompt)
