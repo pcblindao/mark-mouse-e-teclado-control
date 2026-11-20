@@ -1,0 +1,66 @@
+name: Publicar executáveis
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: windows-latest
+            file: markcontrol-windows-x64.exe
+          - os: ubuntu-22.04
+            file: markcontrol-linux-x64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          architecture: x64
+      - run: python -m pip install ".[build,test]"
+      - name: Conferir versão e chave pública
+        run: python -c "import os; from markcontrol import updater as u; assert os.environ['GITHUB_REF_NAME'] == 'v'+u.__version__; u.parts(u.__version__); u.Ed25519PublicKey.from_public_bytes(bytes.fromhex(u.PUBLIC_KEY_HEX))"
+      - run: python -m pytest -q tests/test_updater.py
+      - if: runner.os == 'Windows'
+        run: python -m PyInstaller --noconfirm markcontrol.spec
+      - if: runner.os == 'Linux'
+        run: xvfb-run -a python -m PyInstaller --noconfirm markcontrol.spec
+      - shell: bash
+        run: |
+          if [[ "$RUNNER_OS" == Windows ]]; then
+            mv 'dist/Mark Mouse e Teclado Control.exe' 'dist/markcontrol-windows-x64.exe'
+          else
+            mv dist/markcontrol dist/markcontrol-linux-x64
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.file }}
+          path: dist/${{ matrix.file }}
+          if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY"
+          else
+            gh release create "$GITHUB_REF_NAME" dist/* --verify-tag --generate-notes --repo "$GITHUB_REPOSITORY"
+          fi

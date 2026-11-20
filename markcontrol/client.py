@@ -17,6 +17,7 @@ from PIL import Image
 from .discovery import FP
 from .filetransfer import BLOCK, valid_name, valid_size
 from .security import COMBOS, private_ip, valid_chat
+from .updater import session_lease
 from .wol import mac_bytes
 from .trust import Changed, Trust
 
@@ -206,6 +207,10 @@ class Client:
         asyncio.run(work())
 
     async def connect(self, pin, retrust):
+        with session_lease():
+            await self._connect(pin, retrust)
+
+    async def _connect(self, pin, retrust):
         peer = self.peer
         if not private_ip(peer.ip) or ":" in peer.ip or not FP.fullmatch(peer.fingerprint):
             raise ValueError("Destino inválido.")

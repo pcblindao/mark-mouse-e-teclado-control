@@ -4,12 +4,11 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mark-mouse-e-teclado-control"
-version = "0.1.0"
 description = "Controle remoto de computadores na rede local"
 readme = "README.md"
 requires-python = ">=3.10"
 license = {file = "LICENSE"}
-dynamic = ["dependencies"]
+dynamic = ["dependencies", "version"]
 
 [project.optional-dependencies]
 test = ["pytest>=7"]
@@ -19,6 +18,7 @@ build = ["pyinstaller>=6,<7"]
 markcontrol = "markcontrol.cli:main"
 
 [tool.setuptools.dynamic]
+version = {attr = "markcontrol.version.__version__"}
 dependencies = {file = ["requirements.txt"]}
 
 [tool.setuptools.packages.find]

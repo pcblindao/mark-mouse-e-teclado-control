@@ -17,6 +17,7 @@ from .certs import tls_identity
 from .config import Config
 from .discovery import PORT, Discovery, local_addresses
 from .inputctl import Input
+from .updater import session_lease
 from .security import MAX_MESSAGE, Authorization, Session, _object, decode_message, private_ip, valid_chat
 
 STATIC = Path(__file__).with_name("static")
@@ -322,6 +323,10 @@ class Agent:
         control.session.renew()
 
     async def websocket(self, request):
+        with session_lease():
+            return await self.control_socket(request)
+
+    async def control_socket(self, request):
         if self.control is not None:
             raise web.HTTPConflict()
         # O token viaja no cabeçalho de subprotocolos, sem entrar na URL.

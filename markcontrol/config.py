@@ -90,6 +90,9 @@ class Config:
                 or not isinstance(cfg.get("devices"), list)
                 or not all(isinstance(d, str) and re.fullmatch("[0-9a-f]{64}", d) for d in cfg["devices"])):
             raise ValueError("Configuração inválida.")
+        cfg.setdefault("auto_update", True)
+        if type(cfg["auto_update"]) is not bool:
+            raise ValueError("Opção de atualização inválida.")
         cfg.setdefault("files", True)
         return cfg
 
@@ -123,12 +126,16 @@ class Config:
         self.stamp = stamp
         return self.last_good
 
-    def save(self, name, clipboard, quality, pin=None, *, files=None):
+    def save(self, name, clipboard, quality, pin=None, *, files=None, auto_update=None):
         # None mantém o PIN atual. String vazia desliga o PIN.
         if not valid_name(name) or type(clipboard) is not bool or type(quality) is not int or not 30 <= quality <= 95:
             raise ValueError("Verifique nome e qualidade (30 a 95).")
         with lock(self.path):
             cfg = self.read()
+            if auto_update is not None:
+                if type(auto_update) is not bool:
+                    raise ValueError("Opção de atualização inválida.")
+                cfg["auto_update"] = auto_update
             if files is not None:
                 if type(files) is not bool:
                     raise ValueError("Opção de arquivos inválida.")

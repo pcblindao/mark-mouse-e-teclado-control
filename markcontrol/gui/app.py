@@ -1,3 +1,4 @@
+import json
 import os
 import sys
 import threading
@@ -6,6 +7,8 @@ import tkinter as tk
 from queue import Empty, SimpleQueue
 from tkinter import messagebox
 
+from .. import updater
+from ..version import __version__
 from ..agent_runner import AgentRunner
 from ..config import Config
 from ..discovery import MAX_PEERS, grouped_peers, scan_cycle
@@ -47,7 +50,8 @@ class App:
         install_icon(root)
         self.pending = self.notified = False
         self.tray = Tray(self.runner.events)
-        self.update_offer = None
+        self.updated = False
+        self.update_monitor = None
         root.protocol("WM_DELETE_WINDOW", self.hide)
         self.banner = Card(root, 92, RED, "#e17682", pad=(14, 10), radius=14)
         banner = self.banner.body
@@ -190,15 +194,11 @@ class App:
             self.empty.pack_forget()
             self.tree.pack(fill="both", expand=True)
 
-    def show_update(self, version, on_click):
-        self.runner.events.put(("update-offer", (version, on_click)))
-
     def render_update(self):
         for child in self.update_slot.winfo_children():
             child.destroy()
-        if self.update_offer and not self.session_ip:
-            version, callback = self.update_offer
-            Button(self.update_slot, f"Atualizar {version}", callback, 115).pack()
+        if self.updated:
+            label(self.update_slot, f"Atualizado para v{__version__}", color=MUTED, face="MarkSmall").pack()
 
     def close_panel(self):
         if self.panel:
@@ -218,7 +218,7 @@ class App:
         bar.pack(fill="x")
         bar.pack_propagate(False)
         icon(bar, "gear", "#90ddee").pack(side="left", padx=(0, u(9)))
-        label(bar, "Configurações", face="MarkSheet").pack(side="left")
+        label(bar, f"Configurações · v{__version__}", face="MarkSheet").pack(side="left")
         Button(bar, "close", self.close_panel, 36, height=36, fill=BG,
                tip="Fechar configurações").pack(side="right")
         tk.Frame(sheet, bg=LINE, height=1).pack(fill="x")
@@ -232,6 +232,7 @@ class App:
         quality = tk.IntVar(value=cfg["quality"])
         clip = tk.BooleanVar(value=cfg["clipboard"])
         protected = tk.BooleanVar(value=cfg["pin"] is not None)
+        updates = tk.BooleanVar(value=cfg.get("auto_update", True))
         auto = tk.BooleanVar(value=autostart.enabled())
 
         def option(title, var, command=None):
@@ -252,6 +253,7 @@ class App:
               face="MarkSmall").pack(anchor="w", pady=(u(5), u(9)))
         tk.Frame(form, bg=LINE, height=1).pack(fill="x")
         option("Permitir copiar e colar", clip)
+        option("Atualizar sozinho", updates)
         qrow = tk.Frame(form, bg=BG)
         qrow.pack(fill="x", pady=(u(9), 0))
         label(qrow, "Qualidade", face="MarkStrong").pack(side="left")
@@ -280,7 +282,7 @@ class App:
                     if not cfg["pin"]:
                         raise ValueError("Defina um PIN de oito dígitos.")
                     pin = None
-                self.config.save(name.get(), clip.get(), quality.get(), pin)
+                self.config.save(name.get(), clip.get(), quality.get(), pin, auto_update=updates.get())
                 cfg = self.config.refresh(self.warning.set)
                 self.warning.set("")
                 self.name.set(name.get())
@@ -520,10 +522,6 @@ class App:
                 if kind == "tray":
                     if not self.done.is_set():
                         self.tray_action(value)
-                elif kind == "update-offer":
-                    self.update_offer = value
-                    if not self.headless:
-                        self.render_update()
                 elif kind == "session":
                     self.session(value)
                 elif kind == "warning":
@@ -558,6 +556,8 @@ class App:
                             self.show_public_network(None)
         except Empty:
             pass
+        if self.update_monitor and not self.done.is_set():
+            self.update_monitor.tick(self)
         if self.done.is_set():
             if not self.runner.thread or not self.runner.thread.is_alive():
                 self.root.destroy()
@@ -575,12 +575,21 @@ class App:
 def launch(args, headless, auto):
     enable_dpi()
     root = tk.Tk()
-    app = App(root, args, headless)
-    if not app.config.last_good.get("review_required") and (headless or auto and autostart.enabled()):
+    target = updater.installed()
+    raw = os.environ.pop(updater.RESUME, None)
+    state = json.loads(raw) if raw and target else None
+    app = App(root, args, state["headless"] if state else headless)
+    if target:
+        app.update_monitor = updater.Monitor(target, bool(state))
+    if state:
+        updater.restore(app, state)
+    elif not app.config.last_good.get("review_required") and (headless or auto and autostart.enabled()):
         app.toggle_agent()
     try:
         root.mainloop()
     finally:
+        if app.update_monitor:
+            app.update_monitor.stop()
         app.close()
         if app.runner.thread:
             app.runner.thread.join()
