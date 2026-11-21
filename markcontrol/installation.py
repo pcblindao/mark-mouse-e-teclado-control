@@ -6,6 +6,7 @@ import os
 import secrets
 import shutil
 import socket
+import sqlite3
 import subprocess
 import sys
 import threading
@@ -20,9 +21,12 @@ from .version import __version__
 
 CANONICAL_NAME = "MarkMouseTecladoControl.exe"
 RESUME = "MARKCONTROL_UPDATE_STATE"
+SETUP_MUTEX = r"Local\MarkMouseTecladoControl-Setup"
+UNINSTALL_KEY = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\{F7063A58-BC52-46D8-B1CE-479E87DF7281}_is1"
 LEGACY = {
     "07145922ca50b1f0ffc35ba1e58b1483d8325892290de17a395c0dc5574b0108": ("0.5.1", 26960017),
     "fb17e27e884d2fa22b96fbc8330833cc37b1704e165e3284920073ca8bae9dc8": ("0.6.0", 26930327),
+    "910b4c993cd6fdab032cdca29400a99c7bcd645d4abddeb5d6a0bbd7c6ab7867": ("0.7.0", 26983829),
 }
 _instance = None
 
@@ -84,6 +88,51 @@ def wait_for(predicate, timeout=30):
             return False
         time.sleep(0.05)
     return True
+
+
+def setup_running():
+    if os.name != "nt":
+        return False
+    import ctypes
+    from ctypes import wintypes
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel.OpenMutexW.argtypes, kernel.OpenMutexW.restype = [wintypes.DWORD, wintypes.BOOL, wintypes.LPCWSTR], wintypes.HANDLE
+    kernel.CloseHandle.argtypes, kernel.CloseHandle.restype = [wintypes.HANDLE], wintypes.BOOL
+    handle = kernel.OpenMutexW(0x100000, False, SETUP_MUTEX)
+    if handle:
+        kernel.CloseHandle(handle)
+        return True
+    return ctypes.get_last_error() == 5  # An inaccessible installer lock is busy too.
+
+
+def product_port_busy(port=47801):
+    # This is only a conflict check. Never identify or terminate a process by port.
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=0.2):
+            return True
+    except OSError:
+        return False
+
+
+def executable_released(path):
+    if not path.exists():
+        return True
+    try:
+        with path.open("r+b"):
+            return True
+    except PermissionError:
+        return False
+
+
+def updates_idle(folder):
+    from .updater import lease
+    try:
+        with lease(exclusive=True, directory=folder):
+            return True
+    except sqlite3.OperationalError as exc:
+        if "locked" not in str(exc):
+            raise
+        return False
 
 
 class Instance:
@@ -201,8 +250,22 @@ def installed_info(target):
     raise ValueError("O arquivo existente na pasta do aplicativo não pôde ser identificado")
 
 
-def mark_installed(target, release_version=__version__):
+def mark_installed(target, release_version=None):
+    release_version = __version__ if release_version is None else release_version
+    version(release_version)
     write_json(target.parent / "installation.json", {"version": release_version, "sha256": digest(target)})
+    if os.name == "nt":
+        import winreg
+        try:
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, UNINSTALL_KEY, 0,
+                                winreg.KEY_QUERY_VALUE | winreg.KEY_SET_VALUE) as key:
+                location = winreg.QueryValueEx(key, "InstallLocation")[0]
+                if isinstance(location, str) and Path(location).resolve() == target.parent.resolve():
+                    winreg.SetValueEx(key, "DisplayVersion", 0, winreg.REG_SZ, release_version)
+                    winreg.SetValueEx(key, "DisplayName", 0, winreg.REG_SZ,
+                                     "Mark Mouse e Teclado Control v" + release_version)
+        except OSError:
+            pass  # Optional Setup metadata must not break a healthy app update.
 
 
 def launch(target, argv, *, handoff=False):
@@ -346,16 +409,85 @@ class Startup:
             _instance = None
 
 
-def stop_owner(folder):
+def stop_owner(folder, timeout=30):
     probe = FileLock(Path(folder) / "desktop-instance.lock")
     if probe.acquire():
         probe.close()
         return
     if notify(folder, "shutdown") is None:
         raise RuntimeError("A cópia em execução não respondeu à instalação")
-    if not wait_for(probe.acquire):
+    if not wait_for(probe.acquire, timeout):
         raise TimeoutError("O aplicativo anterior não encerrou")
     probe.close()
+
+
+def prepare_install():
+    """Setup-only preflight. Never start a GUI or change user preferences."""
+    if os.name != "nt" or not getattr(sys, "frozen", False):
+        raise RuntimeError("O instalador requer o executável Windows oficial")
+    folder, target = data_dir(), canonical_path().resolve()
+    if Path(sys.executable).resolve() == target:
+        raise RuntimeError("A preparação precisa ser executada pelo auxiliar temporário do instalador")
+    lock = FileLock(folder / "desktop-install.lock")
+    if not wait_for(lock.acquire):
+        raise TimeoutError("Outra instalação está em andamento")
+    try:
+        existing = installed_info(target)  # Refuse an unidentified file or a downgrade.
+        if existing and version(existing["version"]) > version(__version__):
+            raise ValueError("Uma versão mais nova do aplicativo já está instalada")
+        aliases = []
+        try:
+            stop_owner(folder, timeout=5)
+        except (RuntimeError, TimeoutError):
+            # Only a held same-SID process with an official legacy hash may be
+            # forcibly closed if its old GUI cannot service the IPC request.
+            aliases.extend(stop_legacy())
+            stop_owner(folder, timeout=5)
+        aliases.extend(stop_legacy())
+        if not wait_for(lambda: updates_idle(folder), 30):
+            raise TimeoutError("Uma atualização anterior ainda está em andamento")
+        # An older updater can finish by starting its candidate while Setup is
+        # waiting for its lease. Recheck after that helper releases ownership.
+        stop_owner(folder, timeout=5)
+        aliases.extend(stop_legacy())
+        if not wait_for(lambda: executable_released(target), 20):
+            raise TimeoutError("O executável anterior ainda está em uso")
+        if product_port_busy():
+            raise RuntimeError("Outro programa ocupa a porta de controle; encerre a cópia antiga antes de instalar")
+        pending = read_json(folder / "desktop-install-pending.json", {})
+        previous = pending.get("aliases", []) if isinstance(pending, dict) else []
+        previous = [value for value in previous if isinstance(value, str)] if isinstance(previous, list) else []
+        combined = list(dict.fromkeys([*previous[:256], *(str(path) for path in aliases)]))[:256]
+        write_json(folder / "desktop-install-pending.json", {"version": __version__, "aliases": combined})
+        return 0
+    finally:
+        lock.close()
+
+
+def register_install():
+    """Register only the freshly copied canonical executable, without launching it."""
+    target = canonical_path().resolve()
+    if os.name != "nt" or not getattr(sys, "frozen", False) or Path(sys.executable).resolve() != target:
+        raise RuntimeError("Registro de instalação fora da pasta oficial")
+    folder = data_dir()
+    lock = FileLock(folder / "desktop-install.lock")
+    if not wait_for(lock.acquire):
+        raise TimeoutError("Outra instalação está em andamento")
+    try:
+        mark_installed(target)
+        from .gui import autostart
+        if autostart.enabled():
+            autostart.set_enabled(True)
+        pending = read_json(folder / "desktop-install-pending.json", {})
+        if isinstance(pending, dict) and pending.get("version") == __version__:
+            aliases = pending.get("aliases", [])
+            if not isinstance(aliases, list) or len(aliases) > 256 or not all(isinstance(value, str) for value in aliases):
+                raise ValueError("Estado de migração inválido")
+            migrate_aliases(target, [Path(value) for value in aliases])
+        (folder / "desktop-install-pending.json").unlink(missing_ok=True)
+        return 0
+    finally:
+        lock.close()
 
 
 def migrate_aliases(source, aliases):
@@ -364,13 +496,15 @@ def migrate_aliases(source, aliases):
             atomic_copy(source, alias)
 
 
-def bootstrap(argv=None):
+def bootstrap(argv=None, *, allow_setup=False):
     global _instance
     argv = list(sys.argv[1:] if argv is None else argv)
     if (not getattr(sys, "frozen", False) or os.name != "nt" or any(arg in ("-h", "--help") for arg in argv)
             or (argv and argv[0] not in ("--autostart", "agent"))):
         return Startup()
     folder = data_dir()
+    if setup_running() and not allow_setup:
+        return Startup(exit_code=0)
     source, target = Path(sys.executable).resolve(), canonical_path().resolve()
     background = "--autostart" in argv or bool(argv and argv[0] == "agent")
     handoff = os.environ.pop("MARKCONTROL_INSTALL_HANDOFF", None) == "1"
@@ -382,6 +516,8 @@ def bootstrap(argv=None):
         if not wait_for(install_lock.acquire):
             raise TimeoutError("Outra instalação está em andamento")
         try:
+            if setup_running() and not allow_setup:
+                return Startup(exit_code=0)
             owner_status = notify(folder, "status")
             if owner_status is not None:
                 owner_state = read_json(folder / "desktop-instance.json", {})
@@ -426,16 +562,21 @@ def bootstrap(argv=None):
             return Startup(exit_code=0)
         finally:
             install_lock.close()
+    startup_lock = None
     if source == target and not handoff and not os.environ.get(RESUME):
-        probe = FileLock(folder / "desktop-install.lock")
-        if not probe.acquire():
+        startup_lock = FileLock(folder / "desktop-install.lock")
+        if not startup_lock.acquire():
             return Startup(exit_code=0)
-        probe.close()
-    instance = Instance(folder)
-    if not instance.acquire():
-        contacted = wait_for(lambda: notify(folder, "status" if background else "open") is not None, 3)
-        return Startup(exit_code=0 if contacted else 1)
-    _instance = instance
+    try:
+        if setup_running() and not allow_setup:
+            return Startup(exit_code=0)
+        startup = acquire_desktop(folder, background)
+    finally:
+        if startup_lock:
+            startup_lock.close()
+    if startup.exit_code is not None:
+        return startup
+    instance = startup.instance
     try:
         if source == target:
             mark_installed(target)
@@ -450,4 +591,20 @@ def bootstrap(argv=None):
         instance.close()
         _instance = None
         raise
+    return Startup(instance=instance)
+
+
+def acquire_desktop(folder=None, background=False):
+    global _instance
+    if _instance is not None:
+        return Startup()
+    folder = folder or data_dir()
+    instance = Instance(folder)
+    if not instance.acquire():
+        contacted = wait_for(lambda: notify(folder, "status" if background else "open") is not None, 3)
+        return Startup(exit_code=0 if contacted else 1)
+    if product_port_busy():
+        instance.close()
+        raise RuntimeError("A porta de controle já está em uso; a cópia existente precisa ser encerrada antes de abrir outra")
+    _instance = instance
     return Startup(instance=instance)

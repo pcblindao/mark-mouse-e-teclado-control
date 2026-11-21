@@ -50,7 +50,7 @@ def test_minimized_session_stays_in_tray(monkeypatch, headless):
     window = Mock()
     monkeypatch.setattr(app.tk, "Toplevel", window)
     ui.session("192.168.1.2")
-    ui.root.title.assert_called_with(app.TITLE)
+    ui.root.title.assert_called_with(app.WINDOW_TITLE)
     ui.tray.update.assert_called_once_with(True, "192.168.1.2")
     ui.tray.icon.notify.assert_not_called()
     ui.hide()

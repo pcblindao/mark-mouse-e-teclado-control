@@ -11,7 +11,7 @@ from ..diagnostics import event
 from ..clipboard import check_text
 from ..security import KEYS
 from .icons import install_icon
-from .theme import AMBER, BG, CYAN, FIELD, MUTED, PANEL, TEXT, TITLE, px
+from .theme import AMBER, BG, CYAN, FIELD, MUTED, PANEL, TEXT, TITLE, WINDOW_TITLE, px
 from .widgets import Button, Card, Selector, entry_field, icon, label
 
 FEATURES = {
@@ -65,7 +65,7 @@ class Viewer(tk.Toplevel):
         super().__init__(parent)
         install_icon(self)
         self.peer = peer
-        self.title(f"{TITLE} · {peer.name} · {peer.ip}")
+        self.title(f"{WINDOW_TITLE} · {peer.name} · {peer.ip}")
         width = min(px(self, 1440), self.winfo_screenwidth() - px(self, 48))
         height = min(px(self, 900), self.winfo_screenheight() - px(self, 100))
         self.geometry(f"{max(320, width)}x{max(240, height)}")

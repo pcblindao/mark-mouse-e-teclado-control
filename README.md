@@ -57,7 +57,7 @@ A tabela mostra o que está disponível na versão publicada e o que está previ
 | Pelo navegador | Abra `https://IP_DO_PC:47801/` para controlar o PC pelo navegador. | Disponível |
 | Iniciar com o Windows | Pode abrir e ativar o controle no login do usuário. | Disponível |
 | Executável único | O arquivo `Mark Mouse e Teclado Control.exe` inclui o Python. | Disponível |
-| Instalador para Windows | Instalação com atalhos no menu Iniciar. | Em breve |
+| Instalador para Windows | Setup por usuário, substituição no mesmo diretório e atalhos no menu Iniciar. | Disponível na v0.7.1 |
 | Executar como administrador | Controle de janelas que pedem permissão elevada. | Em breve |
 | Atualização automática | Verificação ao abrir e a cada 15 minutos, assinatura Ed25519, espera por sessões e rollback em falhas. | Disponível na v0.6.0 |
 | Transferência de arquivos | Envio com permissão, integridade e cancelamento. | Disponível |
@@ -116,12 +116,12 @@ Veja a [arquitetura](docs/ARQUITETURA.md) e a [lista completa de funcionalidades
 
 ### Windows 10 e 11
 
-1. Baixe `Mark Mouse e Teclado Control.exe` na página de [Releases](https://github.com/pcblindao/mark-mouse-e-teclado-control/releases/latest).
+1. Baixe `MarkMouseTecladoControl-Setup-0.7.1.exe` na página de [Releases](https://github.com/pcblindao/mark-mouse-e-teclado-control/releases/latest).
 2. Abra o arquivo com um duplo clique. O executável já inclui o Python e roda sem instalação.
 3. Faça o mesmo no outro PC.
 4. Na primeira vez que clicar em **Ativar**, o Firewall do Windows pede permissão. Marque somente Redes privadas e clique em Permitir acesso.
 
-O executável é a opção oficial para Windows. Na v0.7.0 ele instala uma única cópia no perfil do usuário, substitui o programa preservando configurações e aceites e reutiliza a instância em execução.
+O Setup é a opção oficial para Windows. Na v0.7.1 ele registra uma instalação no perfil do usuário, substitui a cópia anterior no mesmo diretório e preserva configurações e aceites. Abrir novamente reutiliza a instância existente. O nome da janela e a entrada em Aplicativos Instalados exibem a versão. Consulte [instalação e validação](docs/INSTALADOR-WINDOWS.md).
 
 ### Linux (X11)
 

@@ -2,8 +2,10 @@ import ctypes
 import sys
 import tkinter.font as tkfont
 from tkinter import ttk
+from ..version import __version__
 
 TITLE = "Mark Mouse e Teclado Control"
+WINDOW_TITLE = f"{TITLE} v{__version__}"
 BG, PANEL, FIELD, LINE = "#131e2a", "#192736", "#101b27", "#2c4052"
 TEXT, MUTED, CYAN = "#f3f7fb", "#aabccc", "#1fb6d5"
 GREEN, AMBER, RED = "#73e0a5", "#ffdb86", "#9a293a"

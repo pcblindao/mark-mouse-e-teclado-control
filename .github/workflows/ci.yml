@@ -26,53 +26,34 @@ jobs:
 
   windows-exe:
     runs-on: windows-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
       - run: ./scripts/build.ps1
-      - name: Confere instalação única, abertura e recolhimento
+      - name: Preparar Inno Setup no runner
         shell: pwsh
         run: |
-          $env:LOCALAPPDATA = Join-Path $env:RUNNER_TEMP 'markcontrol-smoke'
-          $configDir = Join-Path $env:LOCALAPPDATA 'MarkControl'
-          New-Item -ItemType Directory -Path $configDir -Force | Out-Null
-          '{"version":2,"enabled":false}' | Set-Content (Join-Path $configDir 'diagnostic-consent.json') -Encoding ascii
-          $exe = (Resolve-Path 'dist\Mark Mouse e Teclado Control.exe').Path
-          $canonical = Join-Path $env:LOCALAPPDATA 'Programs\MarkControl\MarkMouseTecladoControl.exe'
-          $launcher = Start-Process -FilePath $exe -PassThru
-          try {
-              $deadline = (Get-Date).AddSeconds(60)
-              do {
-                  $window = Get-Process -Name 'MarkMouseTecladoControl' -ErrorAction SilentlyContinue |
-                      Where-Object { $_.Path -eq $canonical -and
-                                     $_.MainWindowTitle -eq 'Mark Mouse e Teclado Control' } |
-                      Select-Object -First 1
-                  if ($window) { break }
-                  Start-Sleep -Milliseconds 250
-              } while ((Get-Date) -lt $deadline)
-              if (-not $window) { throw 'A janela principal do Mark Mouse e Teclado Control não abriu.' }
-              if (-not $launcher.WaitForExit(15000) -or $launcher.ExitCode -ne 0) {
-                  throw 'A instalação não encerrou o inicializador corretamente.'
-              }
-              if (-not $window.CloseMainWindow()) { throw 'A janela não aceitou o pedido de recolher.' }
-              Start-Sleep -Milliseconds 1500
-              $window.Refresh()
-              if ($window.HasExited) { throw 'O aplicativo encerrou ao recolher a janela.' }
-              $second = Start-Process -FilePath $exe -PassThru
-              if (-not $second.WaitForExit(15000) -or $second.ExitCode -ne 0) {
-                  throw 'A segunda abertura não reutilizou a instalação.'
-              }
-              Start-Sleep -Milliseconds 1000
-              $visible = @(Get-Process -Name 'MarkMouseTecladoControl' -ErrorAction SilentlyContinue |
-                  Where-Object { $_.Path -eq $canonical -and $_.MainWindowTitle -eq 'Mark Mouse e Teclado Control' })
-              if ($visible.Count -ne 1) { throw 'A segunda abertura criou outra janela ou não restaurou a existente.' }
-          } finally {
-              Get-Process -Name 'MarkMouseTecladoControl' -ErrorAction SilentlyContinue |
-                  Where-Object { $_.Path -eq $canonical } | Stop-Process -Force -ErrorAction SilentlyContinue
-              if (-not $launcher.HasExited) {
-                  taskkill /PID $launcher.Id /T /F | Out-Null
-              }
+          if (-not (Test-Path 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe') -and
+              -not (Test-Path 'C:\Program Files\Inno Setup 6\ISCC.exe') -and
+              -not (Get-Command ISCC.exe -ErrorAction SilentlyContinue)) {
+              choco install innosetup --yes --no-progress --limit-output
+              if ($LASTEXITCODE -ne 0) { throw 'Inno Setup não foi instalado no runner.' }
           }
+      - name: Compilar Setup Windows real
+        shell: pwsh
+        run: ./scripts/build-installer.ps1 -AppExe 'dist\Mark Mouse e Teclado Control.exe'
+      - name: Validar instalação, reinstalação e instância única
+        shell: pwsh
+        run: |
+          $version = (python -c "from markcontrol.version import __version__; print(__version__)").Trim()
+          ./scripts/check_setup_install.ps1 -SetupExe "dist\MarkMouseTecladoControl-Setup-$version.exe"
+      - name: Guardar logs do teste de instalação
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: setup-smoke-logs
+          path: ${{ runner.temp }}/markcontrol-setup-*/setup-*.log
+          if-no-files-found: ignore

@@ -101,10 +101,19 @@ def main(argv=None):
         else:
             prepare_desktop()
             from .gui.app import launch
+            from . import installation
 
             headless = args.command == "agent"
             options = args if headless else parser.parse_args(["agent"])
-            return launch(options, headless, args.autostart)
+            if installation.setup_running() and installation._instance is None:
+                return 0
+            startup = installation.acquire_desktop(background=headless or args.autostart)
+            try:
+                if startup.exit_code is not None:
+                    return startup.exit_code
+                return launch(options, headless, args.autostart)
+            finally:
+                startup.close()
     except KeyboardInterrupt:
         return 0
     except Exception as exc:

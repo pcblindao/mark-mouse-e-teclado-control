@@ -3,7 +3,7 @@ import threading
 from contextlib import closing
 
 from .icons import logo
-from .theme import TITLE
+from .theme import TITLE, WINDOW_TITLE
 from ..diagnostics import event
 
 
@@ -30,7 +30,7 @@ class Tray:
             menu = Menu(MenuItem("Abrir", lambda: self.post(default), default=True),
                         MenuItem(lambda _: self.toggle_label, lambda: self.post("toggle")),
                         MenuItem("Sair", lambda: self.post("exit")))
-            self.icon = Icon("markcontrol", self.images[self.session], TITLE, menu)
+            self.icon = Icon("markcontrol", self.images[self.session], WINDOW_TITLE, menu)
             self.icon.run(self.setup)
         except Exception as exc:
             # Backend opcional, inclusive em desktops sem área de notificação.
@@ -79,7 +79,7 @@ class Tray:
         if self.ready.is_set():
             try:
                 self.icon.icon = self.images[self.session]
-                self.icon.title = TITLE + (" — Sessão de controle ativa" if self.session else "")
+                self.icon.title = WINDOW_TITLE + (" — Sessão de controle ativa" if self.session else "")
                 self.icon.update_menu()
             except Exception as exc:
                 event("tray_update_failed", exc)

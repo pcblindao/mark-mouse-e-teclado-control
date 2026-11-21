@@ -356,7 +356,7 @@ def test_gui_prefers_main_ip_but_connects_to_latest_reply(monkeypatch):
     )
     hints = []
     ui = SimpleNamespace(
-        root=None, tree=tree, peers={}, replies={}, empty_since=0, fingerprint="",
+        root=None, tree=tree, peers={}, replies={}, viewers={}, empty_since=0, fingerprint="",
         found=SimpleQueue(), primary=None, hint=SimpleNamespace(set=hints.append),
         config=SimpleNamespace(refresh=lambda *_: {}),
         warning=SimpleNamespace(set=lambda _: None),
@@ -381,7 +381,10 @@ def test_gui_prefers_main_ip_but_connects_to_latest_reply(monkeypatch):
     assert hints[-1] == ""
 
     connected = []
-    monkeypatch.setattr(app, "Viewer", lambda root, peer, cfg: connected.append(peer))
+    def open_viewer(root, peer, cfg):
+        connected.append(peer)
+        return SimpleNamespace(bind=lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(app, "Viewer", open_viewer)
     app.App.connect(ui)
     assert connected == [alternate]
 

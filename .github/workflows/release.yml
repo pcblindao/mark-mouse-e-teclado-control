@@ -39,6 +39,29 @@ jobs:
           else
             mv dist/markcontrol dist/markcontrol-linux-x64
           fi
+      - name: Preparar Inno Setup no runner
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          if (-not (Test-Path 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe') -and
+              -not (Test-Path 'C:\Program Files\Inno Setup 6\ISCC.exe') -and
+              -not (Get-Command ISCC.exe -ErrorAction SilentlyContinue)) {
+              choco install innosetup --yes --no-progress --limit-output
+              if ($LASTEXITCODE -ne 0) { throw 'Inno Setup não foi instalado no runner.' }
+          }
+      - name: Compilar e validar Setup Windows real
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          ./scripts/build-installer.ps1 -AppExe 'dist\markcontrol-windows-x64.exe'
+          $version = (python -c "from markcontrol.version import __version__; print(__version__)").Trim()
+          ./scripts/check_setup_install.ps1 -SetupExe "dist\MarkMouseTecladoControl-Setup-$version.exe"
+      - uses: actions/upload-artifact@v4
+        if: runner.os == 'Windows'
+        with:
+          name: windows-setup
+          path: dist/MarkMouseTecladoControl-Setup-*.exe
+          if-no-files-found: error
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.file }}

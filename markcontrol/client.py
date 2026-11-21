@@ -57,6 +57,33 @@ class Upload:
     cancel: threading.Event = field(default_factory=threading.Event)
 
 
+class OutgoingQueue(Queue):
+    """Keep command barriers in order, replacing only adjacent pointer motion."""
+    def __init__(self):
+        super().__init__(512)
+        self.dropped_moves = 0
+
+    def put_nowait(self, message):
+        with self.not_full:
+            if message.get("t") == "move" and self.queue and self.queue[-1].get("t") == "move":
+                self.queue[-1] = message
+                self.dropped_moves += 1
+            else:
+                if self._qsize() >= self.maxsize:
+                    raise Full
+                self._put(message)
+                self.unfinished_tasks += 1
+                self.not_empty.notify()
+
+    def command_waiting(self):
+        with self.mutex:
+            return any(message.get("t") != "move" for message in self.queue)
+
+    def dropped(self):
+        with self.mutex:
+            self.dropped_moves += 1
+
+
 class Client:
     """Uma tentativa por instância. A interface consome events na sua própria thread."""
     def __init__(self, peer):
@@ -64,12 +91,14 @@ class Client:
         self.target = (1, 1)
         self.events = Queue(2)
         self.frames = Queue(1)
-        self.outgoing = Queue(128)
+        self.outgoing = OutgoingQueue()
         self.closed = threading.Event()
         self.files = False
         self._upload = None
         self._lock = threading.Lock()
         self._loop = self._write_ready = None
+        self._motion_interrupt = threading.Event()
+        self._motion_throttled = False
         self.frame_epoch = 0
         self.decode_ms = 0
         self.clipboard_rich = self._clipboard_enabled = False
@@ -294,20 +323,27 @@ class Client:
 
     def close(self):
         self.closed.set()
+        self._motion_interrupt.set()
 
     def send(self, message):
         if self.closed.is_set():
             return
         try:
             self.outgoing.put_nowait(message)
-            if self._loop is not None and self._write_ready is not None:
+            motion = message.get("t") == "move"
+            if not motion:
+                self._motion_interrupt.set()
+            if self._loop is not None and self._write_ready is not None and (not motion or not self._motion_throttled):
                 try:
                     self._loop.call_soon_threadsafe(self._write_ready.set)
                 except RuntimeError:
                     pass
-        except Full:
+        except Full as exc:
             if message["t"] != "move":
+                event("viewer_failed", exc)
                 self.close()
+            else:
+                self.outgoing.dropped()
 
     async def emit(self, kind, value=None):
         if kind == "frame":
@@ -327,6 +363,7 @@ class Client:
     async def write_stream(self, ws):
         self._loop = asyncio.get_running_loop()
         self._write_ready = asyncio.Event()
+        pending_move, next_motion = None, 0
         try:
             while True:
                 self._write_ready.clear()
@@ -335,9 +372,37 @@ class Client:
                         message = self.outgoing.get_nowait()
                     except Empty:
                         break
+                    if message.get("t") == "move":
+                        if pending_move is not None:
+                            self.outgoing.dropped()
+                        pending_move = message
+                        continue
+                    if pending_move is not None:
+                        await ws.send_json(pending_move)
+                        pending_move = None
+                        next_motion = time.perf_counter() + 1 / 60
                     await ws.send_json(message)
+                if pending_move is not None:
+                    remaining = next_motion - time.perf_counter()
+                    if remaining > 0:
+                        self._motion_throttled = True
+                        self._motion_interrupt.clear()
+                        try:
+                            if not self.outgoing.command_waiting():
+                                # OS wait has a real deadline on Windows, unlike
+                                # sub-clock-resolution asyncio sleep callbacks.
+                                # Key/button barriers interrupt it immediately.
+                                await asyncio.to_thread(self._motion_interrupt.wait, remaining)
+                        finally:
+                            self._motion_throttled = False
+                        continue
+                    await ws.send_json(pending_move)
+                    pending_move = None
+                    next_motion = time.perf_counter() + 1 / 60
                 await self._write_ready.wait()
         finally:
+            self._motion_throttled = False
+            self._motion_interrupt.set()
             self._write_ready = self._loop = None
 
     async def decode_stream(self, encoded, ready):

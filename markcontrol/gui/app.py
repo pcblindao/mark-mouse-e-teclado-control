@@ -18,7 +18,7 @@ from ..security import valid_chat
 from ..discovery import MAX_PEERS, grouped_peers, scan_cycle
 from . import autostart, network
 from .icons import install_icon
-from .theme import AMBER, BG, CYAN, FIELD, GREEN, LINE, MUTED, TEXT, TITLE, enable_dpi, install, px
+from .theme import AMBER, BG, CYAN, FIELD, GREEN, LINE, MUTED, TEXT, TITLE, WINDOW_TITLE, enable_dpi, install, px
 from .tray import Tray
 from .viewer import Viewer
 from .widgets import Badge, Button, Card, PeerList, Scroll, Slider, Switch, brand, entry_field, icon, label
@@ -31,6 +31,7 @@ class App:
         self.config = Config()
         self.runner = AgentRunner()
         self.peers = {}
+        self.viewers = {}
         self.replies = {}
         self.primary = None
         self.empty_since = time.perf_counter()
@@ -56,7 +57,7 @@ class App:
         self.name = tk.StringVar(value=cfg["name"])
         self.status = tk.StringVar()
         self.hint = tk.StringVar()
-        root.title(TITLE)
+        root.title(WINDOW_TITLE)
         install(root)
         install_icon(root)
         self.pending = self.notified = False
@@ -103,7 +104,7 @@ class App:
         top.pack_propagate(False)
         top.pack(fill="x")
         brand(top).pack(side="left", padx=(0, u(12)))
-        label(top, TITLE, face="MarkTitle").pack(side="left")
+        label(top, WINDOW_TITLE, face="MarkTitle").pack(side="left")
         Button(top, "gear", self.settings, 36, height=36, fill=BG, tip="Configurações").pack(side="right")
         self.update_slot = tk.Frame(top, bg=BG)
         self.update_slot.pack(side="right", padx=6)
@@ -391,11 +392,43 @@ class App:
     def connect(self, fingerprint=None):
         selection = (fingerprint,) if fingerprint is not None else self.tree.selection()
         if selection and selection[0] in self.peers:
-            _, peer = self.peers[selection[0]]
+            fingerprint = selection[0]
+            _, peer = self.peers[fingerprint]
+            if fingerprint in self.viewers:
+                existing = self.viewers[fingerprint]
+                if existing is None:
+                    return  # A reentrant open arrived while this Viewer is being constructed.
+                try:
+                    if existing.winfo_exists():
+                        if existing.client.closed.is_set() and not peer.busy:
+                            cfg = self.config.refresh(self.warning.set)
+                            existing.release()
+                            existing.peer = peer
+                            existing.local_clip = cfg.get("clipboard", True)
+                            existing.title(f"{WINDOW_TITLE} · {peer.name} · {peer.ip}")
+                            existing.connect()
+                        existing.deiconify()
+                        existing.lift()
+                        return
+                except tk.TclError:
+                    pass  # The prior Viewer was destroyed just before this callback.
+                self.viewers.pop(fingerprint, None)
             if peer.busy:
                 self.status.set("Este PC está em uso.")
             else:
-                Viewer(self.root, peer, self.config.refresh(self.warning.set))
+                self.viewers[fingerprint] = None
+                try:
+                    window = Viewer(self.root, peer, self.config.refresh(self.warning.set))
+                    self.viewers[fingerprint] = window
+
+                    def forget(event, fingerprint=fingerprint, window=window):
+                        if event.widget is window and self.viewers.get(fingerprint) is window:
+                            self.viewers.pop(fingerprint, None)
+
+                    window.bind("<Destroy>", forget, add=True)
+                except Exception:
+                    self.viewers.pop(fingerprint, None)
+                    raise
 
     def update_list(self):
         while not self.found.empty():
@@ -631,7 +664,7 @@ class App:
         self.tray.update(self.active, ip)
         if not self.headless:
             self.render_update()
-        self.root.title(TITLE)
+        self.root.title(WINDOW_TITLE)
 
     def poll(self):
         for action in installation.actions():

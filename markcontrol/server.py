@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
+from collections import deque
 
 from aiohttp import WSMsgType, web
 
@@ -95,6 +96,11 @@ class Control:
     used: set = field(default_factory=set)
     next_chat: float = 0
     clipboard_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    input_ms_total: float = 0
+    input_count: int = 0
+    move_count: int = 0
+    dropped_moves: int = 0
+    command_count: int = 0
 
     def use(self, kind):
         if kind not in self.used:
@@ -107,6 +113,37 @@ class Control:
                 self.upload.close()
             finally:
                 self.upload = None
+
+
+class InputQueue:
+    """Bounded network queue; only adjacent movement is replaceable."""
+    def __init__(self, control, maximum=128):
+        self.control, self.maximum = control, maximum
+        self.items = deque()
+        self.ready, self.space = asyncio.Event(), asyncio.Event()
+
+    async def put(self, message):
+        while True:
+            motion = isinstance(message, dict) and message.get("t") == "move"
+            if motion and self.items and isinstance(self.items[-1], dict) and self.items[-1].get("t") == "move":
+                self.items[-1] = message
+                self.control.dropped_moves += 1
+                self.ready.set()
+                return
+            if len(self.items) < self.maximum:
+                self.items.append(message)
+                self.ready.set()
+                return
+            self.space.clear()
+            await self.space.wait()
+
+    async def get(self):
+        while not self.items:
+            self.ready.clear()
+            await self.ready.wait()
+        message = self.items.popleft()
+        self.space.set()
+        return message
 
 
 class Agent:
@@ -296,6 +333,42 @@ class Agent:
         if self.control is not None:
             self.stop(self.control, reason)
 
+    def input_stats(self, control):
+        if control.input_count or control.dropped_moves:
+            event("input_stats", metrics={"input_ms": round(control.input_ms_total / max(1, control.input_count)),
+                  "move_count": control.move_count, "dropped_moves": control.dropped_moves,
+                  "command_count": control.command_count})
+            control.input_ms_total = 0
+            control.input_count = control.move_count = control.dropped_moves = control.command_count = 0
+
+    async def dispatch_input(self, control, queue):
+        try:
+            while control.session.alive():
+                message = await queue.get()
+                if not control.session.alive():
+                    return
+                if isinstance(message, tuple):
+                    if control.upload is None:
+                        self.stop(control, "bloco de arquivo inesperado")
+                        return
+                    await self.file(control, "file_block", message[1])
+                else:
+                    started = time.perf_counter()
+                    await self.handle(control, message)
+                    if message["t"] in ("move", "click", "scroll", "key", "text", "combo"):
+                        control.input_ms_total += (time.perf_counter() - started) * 1000
+                        control.input_count += 1
+                        if message["t"] == "move":
+                            control.move_count += 1
+                        else:
+                            control.command_count += 1
+                # Allow the socket reader to drain/coalesce the next burst even
+                # when a native input call completed without yielding.
+                await asyncio.sleep(0)
+        except Exception as exc:
+            event("session_failed", exc)
+            self.stop(control, "entrada indisponível")
+
     async def expire(self, control):
         while control.session.alive():
             await asyncio.sleep(0.5)
@@ -349,6 +422,7 @@ class Agent:
                     total_bytes += len(jpeg)
                     previous, last_frame = stamp, clock()
                 if clock() - measured_at >= 60:
+                    self.input_stats(control)
                     width, height = capture.output_size(region["width"], region["height"], control.max_height)
                     event("stream_stats", metrics={"width": width, "height": height,
                           "fps": round(frames / (clock() - measured_at)), "frames": frames,
@@ -536,6 +610,7 @@ class Agent:
         started = datetime.now(timezone.utc)
         since = time.monotonic()
         tasks = []
+        commands = InputQueue(control)
         try:
             await ws.prepare(request)
             if not session.alive():
@@ -543,18 +618,19 @@ class Agent:
             self.notify("session", session.peer)
             event("session_started")
             print(f"Mark Mouse e Teclado Control · SESSÃO ATIVA de {session.peer} — Ctrl+Alt+Shift+Q encerra", flush=True)
-            tasks = [asyncio.create_task(self.stream(control)), asyncio.create_task(self.expire(control))]
+            tasks = [asyncio.create_task(self.stream(control)), asyncio.create_task(self.expire(control)),
+                     asyncio.create_task(self.dispatch_input(control, commands))]
             async for packet in ws:
                 if not session.alive() or packet.type in (WSMsgType.ERROR, WSMsgType.CLOSE):
                     break
-                if packet.type == WSMsgType.BINARY and control.upload is not None:
-                    await self.file(control, "file_block", packet.data)
+                if packet.type == WSMsgType.BINARY:
+                    await commands.put(("file_block", packet.data))
                     continue
                 message = decode_message(packet.data) if packet.type == WSMsgType.TEXT else None
                 if message is None:
                     self.stop(control, "mensagem inválida")
                     break
-                await self.handle(control, message)
+                await commands.put(message)
         except Exception as exc:
             event("session_failed", exc)
         finally:
@@ -565,6 +641,7 @@ class Agent:
             for task in tasks:
                 task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
+            self.input_stats(control)
             try:
                 control.discard_upload()
             except OSError:
