@@ -148,6 +148,8 @@ function receive(data) {
     finishClipboard(null, message.s);
   } else if (message.t === "clip_ok") {
     status("Texto disponível na área de transferência do remoto.");
+  } else if (message.t === "notice" && message.code === "admin_window") {
+    status("Janela de administrador no PC remoto: o Windows bloqueou o clique. Abra o app do PC remoto como administrador.");
   } else if (message.t === "error") {
     if (message.op === "clip_get") finishClipboard("Área de transferência indisponível ou acima de 100 KiB.");
     else if (message.op === "clip_set") status("O agente não aceitou o texto da área de transferência.");

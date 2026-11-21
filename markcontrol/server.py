@@ -22,6 +22,7 @@ from .certs import tls_identity, data_dir
 from .config import Config
 from .discovery import PORT, Discovery, local_addresses
 from .inputctl import Input
+from .elevation import BlockDetector
 from .clipboard_transport import CHUNK, MIME, blocking
 from .clipboard_bundle import MAX_BUNDLE_BYTES, create_bundle, apply_bundle, inspect_bundle_kind
 from .diagnostics import event
@@ -151,6 +152,7 @@ class Agent:
         self.auth = Authorization(config.authenticate)
         self.notify = notify
         self.input = Input()
+        self.blocked = BlockDetector()
         self.allow_clipboard = allow_clipboard
         self.allow_files = files
         self.history_path = config.path.with_name("history.json")
@@ -529,6 +531,16 @@ class Agent:
 
         self.notify("chat", {"text": text, "reply": reply})
 
+    def admin_window(self, message, control):
+        blocked = getattr(self, "blocked", None)
+        if blocked is None:
+            return False
+        try:
+            point = self.input.point(message, control.region) if message["t"] == "click" else None
+            return blocked.check(point)
+        except Exception:  # Aviso opcional: nunca atrasa nem impede a entrada.
+            return False
+
     async def handle(self, control, message):
         kind = message["t"]
         if not control.session.alive():
@@ -575,6 +587,9 @@ class Agent:
             await self.transfer(control, message)
             return
         elif control.region is not None or kind == "combo":
+            if kind in ("click", "key") and message.get("d") == "down" and self.admin_window(message, control):
+                # O Windows descarta em silêncio entradas para janelas de administrador.
+                await control.ws.send_json({"t": "notice", "code": "admin_window"})
             try:
                 await self.input.apply(message, control.region, control.session.alive)
             except (OSError, ValueError, self.input.keyboard_module.Controller.InvalidCharacterException):

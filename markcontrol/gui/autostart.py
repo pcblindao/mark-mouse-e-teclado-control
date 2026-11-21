@@ -31,9 +31,28 @@ def quote(arg):
     return '"' + value + '"'
 
 
+def task_mode():
+    """No Windows publicado o início automático é a tarefa elevada do Agendador."""
+    from .. import elevation
+    return os.name == "nt" and elevation.required() and elevation.is_elevated()
+
+
+def remove_run_entries():
+    import winreg
+    with winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, RUN, 0, winreg.KEY_SET_VALUE) as key:
+        for name in (PRODUCT_NAME, LEGACY_RUN_NAME):
+            with suppress(FileNotFoundError):
+                winreg.DeleteValue(key, name)
+
+
 def enabled():
     if os.name != "nt":
         return desktop_file().exists()
+    from .. import elevation
+    if elevation.required():
+        with suppress(OSError):
+            if elevation.task_exists():
+                return True
     import winreg
     try:
         with winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUN) as key:
@@ -47,7 +66,14 @@ def enabled():
 
 
 def set_enabled(value):
-    if os.name == "nt":
+    if os.name == "nt" and task_mode():
+        from .. import elevation
+        if value:
+            elevation.register_task()
+        else:
+            elevation.delete_task()
+        remove_run_entries()
+    elif os.name == "nt":
         import winreg
         with winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, RUN, 0, winreg.KEY_SET_VALUE) as key:
             if value:

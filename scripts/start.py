@@ -29,6 +29,28 @@ if __name__ == "__main__":
         if ctypes.windll.kernel32.AttachConsole(-1):
             sys.stdout = open("CONOUT$", "w", encoding="utf-8", buffering=1)
             sys.stderr = sys.stdout
+    if getattr(sys, "frozen", False) and os.name == "nt":
+        # Sem privilégio de administrador o Windows (UIPI) descarta cliques e
+        # teclas enviados para janelas elevadas. O app sempre roda elevado.
+        from markcontrol import elevation
+        wait_previous = elevation.WAIT_PREVIOUS in sys.argv[1:]
+        if wait_previous:
+            sys.argv.remove(elevation.WAIT_PREVIOUS)
+        # A troca por atualização exige que este mesmo processo confirme a saúde;
+        # a elevação acontece logo depois da confirmação (updater.restore).
+        handshake = bool(os.environ.get("MARKCONTROL_UPDATE_STATE")
+                         or os.environ.get("MARKCONTROL_INSTALL_HANDOFF"))
+        if not handshake and not elevation.is_elevated():
+            try:
+                accepted = elevation.relaunch(sys.argv[1:])
+            except OSError:
+                accepted = False
+            if not accepted and "--autostart" not in sys.argv[1:]:
+                elevation.refuse_message()
+            raise SystemExit(0 if accepted else 1)
+        if wait_previous:
+            from markcontrol.certs import data_dir
+            elevation.wait_previous(data_dir())
     from markcontrol import installation
     after_install = sys.argv[1:2] == ["--after-install"]
     if after_install:

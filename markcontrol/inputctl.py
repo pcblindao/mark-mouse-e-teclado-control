@@ -4,6 +4,8 @@ import sys
 from .security import NAMED_KEYS
 from .diagnostics import event
 
+COMBO_STEP = 0.03
+
 
 class Input:
     def __init__(self):
@@ -20,11 +22,15 @@ class Input:
     def hotkey(self, callback):
         return self.keyboard_module.GlobalHotKeys({"<ctrl>+<alt>+<shift>+q": callback})
 
-    def _move(self, message, region):
-        self.mouse.position = (
+    @staticmethod
+    def point(message, region):
+        return (
             region["left"] + round(message["x"] * (region["width"] - 1)),
             region["top"] + round(message["y"] * (region["height"] - 1)),
         )
+
+    def _move(self, message, region):
+        self.mouse.position = self.point(message, region)
 
     @staticmethod
     def _press(controller, held, value, direction):
@@ -55,6 +61,7 @@ class Input:
                 if active() and not ctypes.windll.user32.LockWorkStation():
                     raise OSError("O sistema recusou o bloqueio.")
                 return
+            pressed = []
             try:
                 for name in message["keys"]:
                     if not active():
@@ -64,7 +71,16 @@ class Input:
                     else:
                         key = self.keys.get(aliases.get(name, name), name.lower())
                     self._press(self.keyboard, self.held_keys, key, "down")
+                    pressed.append(key)
+                    # O Windows precisa ver o modificador pressionado antes da próxima tecla.
+                    await asyncio.sleep(COMBO_STEP)
             finally:
+                # Solta na ordem inversa, como uma pessoa faria (Tab antes de Alt).
+                for key in reversed(pressed):
+                    try:
+                        self._press(self.keyboard, self.held_keys, key, "up")
+                    except Exception as exc:
+                        event("input_release_failed", exc)
                 self.release_all()
         elif kind == "text":
             for char in message["s"]:

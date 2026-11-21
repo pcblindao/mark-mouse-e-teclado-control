@@ -58,7 +58,7 @@ A tabela mostra o que está disponível na versão publicada e o que está previ
 | Iniciar com o Windows | Pode abrir e ativar o controle no login do usuário. | Disponível |
 | Executável único | O arquivo `Mark Mouse e Teclado Control.exe` inclui o Python. | Disponível |
 | Instalador para Windows | Setup por usuário, substituição no mesmo diretório e atalhos no menu Iniciar. | Disponível na v0.7.1 |
-| Executar como administrador | Controle de janelas que pedem permissão elevada. | Em breve |
+| Executar como administrador | Sempre roda elevado no Windows: controla Gerenciador de Tarefas, instaladores e programas de administrador. Início com o Windows por tarefa agendada, sem aviso do UAC no logon. | Disponível na v0.7.2 |
 | Atualização automática | Verificação ao abrir e a cada 15 minutos, assinatura Ed25519, espera por sessões e rollback em falhas. | Disponível na v0.6.0 |
 | Transferência de arquivos | Envio com permissão, integridade e cancelamento. | Disponível |
 | Modo só visualizar | Visualização da tela sem controle de mouse e teclado. | Disponível |
@@ -116,7 +116,7 @@ Veja a [arquitetura](docs/ARQUITETURA.md) e a [lista completa de funcionalidades
 
 ### Windows 10 e 11
 
-1. Baixe `MarkMouseTecladoControl-Setup-0.7.1.exe` na página de [Releases](https://github.com/pcblindao/mark-mouse-e-teclado-control/releases/latest).
+1. Baixe `MarkMouseTecladoControl-Setup-0.7.2.exe` na página de [Releases](https://github.com/pcblindao/mark-mouse-e-teclado-control/releases/latest).
 2. Abra o arquivo com um duplo clique. O executável já inclui o Python e roda sem instalação.
 3. Faça o mesmo no outro PC.
 4. Na primeira vez que clicar em **Ativar**, o Firewall do Windows pede permissão. Marque somente Redes privadas e clique em Permitir acesso.
@@ -216,7 +216,7 @@ O controle foi feito para a rede local e só aceita conexões de endereços priv
 <details>
 <summary>Por que algumas telas ou atalhos não respondem?</summary>
 
-Telas protegidas, como a confirmação do UAC no Windows, e atalhos que o sistema ou o navegador reservam podem ficar fora de alcance. O modo administrador e os botões de teclas especiais estão previstos.
+Desde a v0.7.2 o app sempre roda como administrador no Windows, então janelas elevadas recebem cliques e teclas. A tela de confirmação do UAC (área de trabalho segura) e o Ctrl+Alt+Del continuam fora de alcance de qualquer programa comum. Se o PC remoto recusar o UAC, o visualizador avisa quando um clique cair numa janela de administrador.
 
 </details>
 
@@ -240,3 +240,7 @@ Baixe esta versão uma vez nos dois PCs. Versões anteriores não tinham o atual
 ## Atualização 0.7.0
 
 Área de transferência de texto, prints/imagens e arquivos/pastas no aplicativo desktop, nos dois sentidos. Instalação Windows canônica e instância única preservam as configurações e aceites já existentes. A v0.6.0 recebe esta versão pelo atualizador assinado ao finalizar as sessões; a migração canônica dessa transição acontece na próxima abertura normal. Consulte [uso, limites e validação](docs/CLIPBOARD-INSTALACAO-0.7.0.md). O consentimento de diagnósticos continua na versão2.
+
+## Atualização 0.7.2
+
+Cliques e teclas voltam a funcionar em janelas de administrador do PC acessado: o aplicativo agora sempre abre como administrador no Windows e o início automático usa uma tarefa agendada elevada. Os botões de teclas especiais (Win, Win+D, Ctrl+Shift+Esc, Bloquear tela e o novo Alt+F4) eram recusados pelo próprio visualizador e foram corrigidos. Consulte [detalhes e validação](docs/ADMINISTRADOR-0.7.2.md).

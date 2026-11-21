@@ -20,10 +20,11 @@ FEATURES = {
     "send_combo": ("combo", "combos", "send_combo"),
     "send_chat": ("chat", "send_chat"),
 }
+# Nomes exatamente iguais a security.COMBOS: o cliente recusa qualquer outra grafia.
 COMBOS = {
-    "Win": ["Meta"], "Win+D": ["Meta", "d"], "Alt+Tab": ["Alt", "Tab"],
-    "Ctrl+Shift+Esc": ["Control", "Shift", "Escape"], "PrintScreen": ["PrintScreen"],
-    "Bloquear tela": ["Meta", "l"],
+    "Win": ["Win"], "Win+D (área de trabalho)": ["Win", "D"], "Alt+Tab": ["Alt", "Tab"],
+    "Alt+F4 (fechar janela)": ["Alt", "F4"], "Ctrl+Shift+Esc (Gerenciador de Tarefas)": ["Ctrl", "Shift", "Esc"],
+    "PrintScreen": ["PrintScreen"], "Bloquear tela (Win+L)": ["Win", "L"],
 }
 
 
@@ -59,6 +60,9 @@ def protocol_key(keysym, char=""):
         return key.lower() if len(key) == 1 else key
     return None
 
+
+ADMIN_WINDOW_NOTICE = ("Janela de administrador no PC remoto: o Windows bloqueou o clique. "
+                       "Abra o app do PC remoto como administrador.")
 
 class Viewer(tk.Toplevel):
     def __init__(self, parent, peer, cfg):
@@ -585,6 +589,8 @@ class Viewer(tk.Toplevel):
             self.status.set(m["s"][:500])
         elif kind == "clip_ok":
             self.status.set("Texto disponível no remoto.")
+        elif kind == "notice" and m.get("code") == "admin_window":
+            self.status.set(ADMIN_WINDOW_NOTICE)
         elif kind == "pong" and self.ping == m["n"]:
             self.rtt = round(1000*(time.monotonic()-self.tick))
         elif kind == "error":

@@ -1,6 +1,6 @@
 ; Stable current-user installation. Keep AppId unchanged across releases.
 #ifndef AppVersion
-  #define AppVersion "0.7.1"
+  #define AppVersion "0.7.2"
 #endif
 #ifndef AppBinary
   #define AppBinary "..\dist\markcontrol-windows-x64.exe"
@@ -63,6 +63,10 @@ Name: "{userdesktop}\Mark Mouse e Teclado Control"; Filename: "{app}\MarkMouseTe
 
 [Run]
 Filename: "{app}\MarkMouseTecladoControl.exe"; Parameters: "--after-install --autostart"; WorkingDir: "{app}"; Flags: nowait; Check: ShouldStartApplication
+
+[UninstallRun]
+; A tarefa elevada de início automático só pode ser removida com privilégio.
+Filename: "{sys}\schtasks.exe"; Parameters: "/Delete /TN ""Mark Mouse e Teclado Control"" /F"; Flags: runhidden shellexec waituntilterminated; Verb: "runas"; RunOnceId: "DeleteElevatedTask"
 
 [UninstallDelete]
 ; Only program-owned installation artifacts; never the separate MarkControl profile.

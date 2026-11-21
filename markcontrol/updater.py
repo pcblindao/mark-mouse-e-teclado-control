@@ -436,4 +436,22 @@ def restore(app, state):
             app.updated = True
             if not app.headless:
                 app.render_update()
+            app.root.after(3000, lambda: elevate(app, state.get("argv") or []))
     app.root.after(100, acknowledge)
+
+
+def elevate(app, argv):
+    """Uma versão anterior sem elevação atualizou para esta: reabre como administrador."""
+    from . import elevation
+    if app.done.is_set() or not elevation.required() or elevation.is_elevated():
+        return
+    try:
+        accepted = elevation.relaunch(list(argv))
+    except OSError as exc:
+        event("elevation_failed", exc)
+        return
+    if accepted:
+        event("elevation_after_update")
+        app.close()
+    else:
+        event("elevation_refused")
