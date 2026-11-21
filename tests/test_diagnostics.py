@@ -64,7 +64,7 @@ def test_failed_notification_cannot_block_minimizing(monkeypatch):
     modal = Mock()
     monkeypatch.setattr(app.messagebox, "showinfo", modal)
     app.App.hide(ui)
-    assert order == ["hidden", "notification"]
+    assert order == ["hidden"]
     modal.assert_not_called()
     ui.root.deiconify.assert_not_called()
 

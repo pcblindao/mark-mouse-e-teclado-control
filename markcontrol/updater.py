@@ -24,12 +24,13 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 from .certs import data_dir
 from .config import write_bytes, write_json
 from .version import __version__
+from .diagnostics import event
 
 REPO = "pcblindao/mark-mouse-e-teclado-control"
 API = f"https://api.github.com/repos/{REPO}/releases/latest"
-PUBLIC_KEY_HEX = ""  # Cole aqui a saída pública de sign_release.py --generate.
+PUBLIC_KEY_HEX = "9023d853081e0020037ca01e5fe7ff3cfc40cf9570d53c79fadc3531aaaede92"
 LIMIT = 200_000_000
-INTERVAL = 6 * 3600
+INTERVAL = 15 * 60
 WINDOWS = "markcontrol-windows-x64.exe"
 LINUX = "markcontrol-linux-x64"
 RESUME = "MARKCONTROL_UPDATE_STATE"
@@ -57,7 +58,20 @@ def fingerprint(stream):
 
 
 def manifest(raw, version, name):
-    fields = json.loads(raw)
+    def unique(pairs):
+        result = dict(pairs)
+        if len(result) != len(pairs):
+            raise ValueError("Campo repetido no manifesto")
+        return result
+
+    if not isinstance(raw, (str, bytes)) or len(raw) > 4096:
+        raise ValueError("Manifesto inválido")
+    fields = json.loads(raw, object_pairs_hook=unique)
+    if (not isinstance(fields, dict) or set(fields) != {"version", "name", "sha256", "size", "signature"}
+            or not isinstance(fields["signature"], str)
+            or not re.fullmatch("[0-9a-f]{128}", fields["signature"])
+            or not isinstance(fields["sha256"], str)):
+        raise ValueError("Manifesto inválido")
     signature = bytes.fromhex(fields.pop("signature"))
     key = Ed25519PublicKey.from_public_bytes(bytes.fromhex(PUBLIC_KEY_HEX))
     key.verify(signature, canonical(fields))
@@ -130,11 +144,7 @@ def installed():
     if not getattr(sys, "frozen", False) or platform.machine().lower() not in ("amd64", "x86_64"):
         return None
     target = Path(sys.executable).resolve()
-    if sys.platform == "win32":
-        folder = Path(os.environ["LOCALAPPDATA"]) / "Programs" / "MarkControl"
-        if target.parent != folder.resolve():
-            return None
-    elif sys.platform != "linux":
+    if sys.platform not in ("win32", "linux"):
         return None
     return target
 
@@ -151,6 +161,7 @@ def spawn(executable, args, **kwargs):
 
 
 def prepare(target, cancel):
+    event("update_check")
     def checkpoint():
         while not cancel.is_set():
             try:
@@ -178,7 +189,7 @@ def prepare(target, cancel):
     fields = manifest(raw, version, name)
     folder = pool(target)
     folder.mkdir(mode=0o700, exist_ok=True)
-    if folder.is_symlink() or (os.name != "nt" and
+    if folder.resolve() != target.parent.resolve() / folder.name or (os.name != "nt" and
             (folder.stat().st_uid != os.getuid() or folder.stat().st_mode & 0o077)):
         raise ValueError("Diretório de atualização inseguro")
     stage = Path(tempfile.mkdtemp(dir=folder, prefix="release-"))
@@ -188,6 +199,7 @@ def prepare(target, cancel):
             read_url(base + name, fields["size"], out, checkpoint)
             out.seek(0)
             verify(out, fields)
+        event("update_verified")
         candidate.chmod(0o700)
         (stage / "manifest").write_bytes(raw)
         previous = folder / ("previous" + target.suffix)
@@ -284,6 +296,7 @@ def swap(target, previous, stage, state, version):
         healthy = process.poll() is None and ready.is_file() and ready.read_text() == version
     finally:
         if changed and not healthy:
+            event("update_rollback")
             if process:
                 stop_candidate(process)
             shutil.copy2(previous, stage / "restore")
@@ -291,6 +304,8 @@ def swap(target, previous, stage, state, version):
             restart(False)
         elif not changed:
             restart(False)
+        else:
+            event("update_applied")
 
 
 def apply(target, stage, version, pid):
@@ -318,8 +333,11 @@ def apply(target, stage, version, pid):
                     if not wait_for(lambda: go.exists() or cancelled(), 60) or not go.is_file():
                         return 1
                     state = json.loads(go.read_bytes())
-                    while parent_alive(pid):
-                        time.sleep(0.1)
+                    if not wait_for(lambda: not parent_alive(pid) or (stage / "cancel").exists(), 60):
+                        event("update_failed", TimeoutError())
+                        return 1
+                    if (stage / "cancel").exists():
+                        return 1
                     swap(target, previous, stage, state, version)
                     return 0
             except sqlite3.OperationalError as exc:
@@ -331,7 +349,8 @@ def apply(target, stage, version, pid):
 
 
 def snapshot(app):
-    return dict(active=app.active, headless=app.headless, window=app.root.state(), argv=sys.argv[1:])
+    return dict(active=app.active, desired_active=app.desired_active,
+                headless=app.headless, window=app.root.state(), argv=sys.argv[1:])
 
 
 class Monitor:
@@ -350,8 +369,9 @@ class Monitor:
         if self.future and self.future.done():
             try:
                 self.job = self.future.result()
-            except Exception:
-                pass  # Falha de rede, armazenamento ou validação: manter o app.
+            except Exception as exc:
+                event("update_failed", exc)
+                self.next_check = time.monotonic() + 60
             self.future = None
         if self.job:
             stage, process = self.job
@@ -387,8 +407,11 @@ class Monitor:
         self.executor.shutdown(wait=False)
 
 def restore(app, state):
-    if state["active"] and not app.config.last_good.get("review_required"):
-        app.toggle_agent()
+    desired = state.get("desired_active", state["active"])
+    expected_active = desired and not app.config.last_good.get("review_required", False)
+    app.desired_active = expected_active
+    if expected_active:
+        app.toggle_agent(persist=False)
     window = state["window"]
     if window == "withdrawn":
         app.root.withdraw()
@@ -400,7 +423,7 @@ def restore(app, state):
     def acknowledge():
         if app.done.is_set() or not state["version"]:
             return
-        if app.pending or app.active != state["active"]:
+        if app.pending or app.active != expected_active:
             app.root.after(100, acknowledge)
             return
         if window == "withdrawn" and not app.headless:

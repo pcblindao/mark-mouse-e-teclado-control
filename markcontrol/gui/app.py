@@ -14,6 +14,7 @@ from ..version import __version__
 from ..agent_runner import AgentRunner
 from ..config import Config
 from ..diagnostics import event
+from ..security import valid_chat
 from ..discovery import MAX_PEERS, grouped_peers, scan_cycle
 from . import autostart, network
 from .icons import install_icon
@@ -36,12 +37,19 @@ class App:
         self.found = SimpleQueue()
         self.done = threading.Event()
         self.session_ip = ""
+        self.chat_messages = []
+        self.chat_text = None
+        self.chat_window = None
+        self.chat_feedback = None
         root.bind("<Unmap>", self.queue_minimize, add=True)
         self.active = False
         self.fingerprint = ""
         self.error = ""
         self.warning = tk.StringVar()
         cfg = self.config.refresh(self.warning.set, opening=True)
+        self.desired_active = cfg.get("agent_enabled", False)
+        self.activation_configured = "agent_enabled" in cfg
+        self.retry_activation_at = float("inf")
         if cfg.get("review_required"):
             self.warning.set("config.json.bad preservado. Revise o PIN e salve em Configurar.")
             self.headless = False
@@ -70,8 +78,8 @@ class App:
             return
         choice = messagebox.askyesnocancel(
             "Ajudar a melhorar o aplicativo",
-            "Autoriza enviar diagnósticos técnicos automaticamente quando ocorrer uma falha?\n\n"
-            "Inclui versão, sistema e eventos técnicos recentes. Não inclui teclas, tela, PIN, "
+            "Autoriza enviar diagnósticos técnicos automaticamente durante o uso e em caso de falha?\n\n"
+            "Inclui versão, sistema, eventos técnicos, FPS e tempos de transmissão. Não inclui teclas, tela, PIN, "
             "arquivos ou área de transferência. O serviço do Marcos encaminhará os relatos "
             "ao GitHub, onde serão públicos. Não é preciso ter conta no GitHub.\n\n"
             "Você pode desligar o envio nas Configurações. Recusar mantém todos os recursos do app.",
@@ -172,9 +180,9 @@ class App:
         card.outline = "#315b4c" if self.active else "#3b4b5c"
         card.body.configure(bg=card.fill)
         card.layout()
-        self.enabled.set(self.active)
+        self.enabled.set(self.desired_active)
         self.toggle = Switch(card.body, self.enabled, self.toggle_agent, large=True)
-        self.toggle.enabled = not self.pending
+        self.toggle.enabled = not self.pending or self.desired_active
         self.toggle.pack(side="right")
         if self.active:
             icon(card.body, "power", GREEN, plate=42, fill="#213e34", edge="#336251").pack(
@@ -184,8 +192,8 @@ class App:
         title = tk.Frame(words, bg=card.fill)
         title.pack(anchor="w")
         label(title, "Ativar este PC", face="MarkActivation" if self.active else "MarkSection").pack(side="left")
-        Badge(title, "Ativo" if self.active else "Desativado",
-              GREEN if self.active else "#bed1df").pack(side="left", padx=px(card, 10))
+        state = "Ativo" if self.active else "Tentando ativar" if self.desired_active else "Desativado"
+        Badge(title, state, GREEN if self.active else AMBER if self.desired_active else "#bed1df").pack(side="left", padx=px(card, 10))
         label(words, "Outros PCs podem controlar este" if self.active else
               "Este PC não aceita controle remoto.", color=MUTED,
               face="MarkDetail" if self.active else "MarkSmall").pack(anchor="w", pady=(px(card, 5), 0))
@@ -248,6 +256,7 @@ class App:
         protected = tk.BooleanVar(value=cfg["pin"] is not None)
         updates = tk.BooleanVar(value=cfg.get("auto_update", True))
         diagnostic_auto = tk.BooleanVar(value=telemetry.preference() is True)
+        files = tk.BooleanVar(value=cfg.get("files", True))
         auto = tk.BooleanVar(value=autostart.enabled())
 
         def option(title, var, command=None):
@@ -268,6 +277,7 @@ class App:
               face="MarkSmall").pack(anchor="w", pady=(u(5), u(9)))
         tk.Frame(form, bg=LINE, height=1).pack(fill="x")
         option("Permitir copiar e colar", clip)
+        option("Permitir transferir arquivos", files)
         option("Atualizar sozinho", updates)
         option("Enviar diagnósticos automaticamente", diagnostic_auto)
         label(form, "Somente com autorização. Relatos técnicos públicos no GitHub.",
@@ -300,7 +310,7 @@ class App:
                     if not cfg["pin"]:
                         raise ValueError("Defina um PIN de oito dígitos.")
                     pin = None
-                self.config.save(name.get(), clip.get(), quality.get(), pin, auto_update=updates.get())
+                self.config.save(name.get(), clip.get(), quality.get(), pin, files=files.get(), auto_update=updates.get())
                 telemetry.set_preference(diagnostic_auto.get())
                 cfg = self.config.refresh(self.warning.set)
                 self.warning.set("")
@@ -328,6 +338,7 @@ class App:
 
         Button(form, "Esquecer aparelhos", forget, 147, fill=BG, ink="#e1b8bc").pack(anchor="w", pady=(u(8), 0))
         Button(form, "Enviar diagnóstico", self.show_diagnostics, 160, fill=BG).pack(anchor="w", pady=(u(8), 0))
+        Button(form, "Mensagens da sessão", self.show_chat, 180, fill=BG).pack(anchor="w", pady=(u(8), 0))
         if self.fingerprint:
             label(form, "SHA-256  " + self.fingerprint, color=MUTED, wraplength=px(form, 330),
                   justify="left").pack(anchor="w")
@@ -337,16 +348,36 @@ class App:
         Button(footer, "Cancelar", self.close_panel, 82, fill=footer["bg"]).pack(side="right", padx=u(8))
         name_field.focus_set()
 
-    def toggle_agent(self):
-        if self.pending or self.done.is_set():
+    def toggle_agent(self, *, persist=True):
+        if self.done.is_set() or self.pending and (not persist or not self.desired_active):
             return
+        if persist:
+            desired = not self.desired_active
+            try:
+                self.config.set_agent_enabled(desired)
+            except (OSError, ValueError) as exc:
+                event("config_failed", exc)
+                self.status.set("Não foi possível salvar a ativação deste PC.")
+                return
+            self.desired_active = desired
+            try:
+                autostart.set_enabled(desired)
+            except Exception as exc:
+                event("autostart_failed", exc)
+                self.warning.set("Ativação salva. Não foi possível configurar o início com o sistema.")
         self.pending = True
-        if self.active:
-            self.runner.stop()
-        else:
+        self.tray.desired_active = self.desired_active
+        self.tray.update(self.active, self.session_ip)
+        if self.desired_active:
             self.runner.start(self.args)
+        else:
+            self.runner.stop()
+            if not self.active:
+                self.pending = False
         if not self.headless:
-            self.toggle.enabled = False
+            self.enabled.set(self.desired_active)
+            self.toggle.enabled = not self.pending or self.desired_active
+            self.toggle.draw()
 
     def discover(self):
         while not self.done.is_set():
@@ -442,16 +473,94 @@ class App:
         if self.tray.ready.is_set():
             self.root.withdraw()
             event("window_hidden_in_tray")
-            if not self.session_ip and not self.notified:
-                self.notified = True
-                if self.tray.icon.HAS_NOTIFICATION:
-                    try:
-                        self.tray.icon.notify("continua rodando na bandeja", TITLE)
-                    except Exception as exc:
-                        event("tray_notification_failed", exc)
         else:
             self.root.iconify()
             event("window_minimized_without_tray")
+
+    def receive_chat(self, value):
+        if not isinstance(value, dict) or not valid_chat(value.get("text")) or not callable(value.get("reply")):
+            return
+        self.chat_messages.append(dict(value))
+        del self.chat_messages[:-20]
+        self.paint_chat()
+
+    def paint_chat(self):
+        if self.chat_text is not None and self.chat_text.winfo_exists():
+            self.chat_text.configure(state="normal")
+            self.chat_text.delete("1.0", "end")
+            for item in self.chat_messages:
+                self.chat_text.insert("end", "Remoto: " + item["text"] + "\n")
+                if item.get("answer"):
+                    self.chat_text.insert("end", "Você: " + item["answer"] + "\n")
+            self.chat_text.configure(state="disabled")
+            self.chat_text.see("end")
+
+    def show_chat(self):
+        if self.chat_window is not None and self.chat_window.winfo_exists():
+            self.chat_window.deiconify()
+            self.chat_window.lift()
+            return
+        dialog = tk.Toplevel(self.root)
+        self.chat_window = dialog
+        dialog.title("Mensagens da sessão")
+        dialog.geometry("520x380")
+        dialog.configure(bg=BG)
+        self.chat_text = tk.Text(dialog, wrap="word", bg=FIELD, fg=TEXT, state="disabled")
+        self.chat_text.pack(fill="both", expand=True, padx=12, pady=12)
+        field = entry_field(dialog)
+        feedback = label(dialog, color=AMBER)
+        self.chat_feedback = feedback
+        feedback.pack(fill="x", padx=12)
+
+        def close():
+            self.chat_text = self.chat_window = self.chat_feedback = None
+            dialog.destroy()
+        dialog.protocol("WM_DELETE_WINDOW", close)
+
+        def reply():
+            value = field.get()
+            try:
+                self.reply_chat(value)
+            except (ValueError, RuntimeError) as exc:
+                feedback.configure(text=str(exc))
+                return
+            field.delete(0, "end")
+            feedback.configure(text="Enviando resposta…")
+
+        Button(dialog, "Responder", reply, 110).pack(pady=12)
+        self.paint_chat()
+
+    def reply_chat(self, value):
+        if not valid_chat(value):
+            raise ValueError("Use uma mensagem de 1 a 500 caracteres válidos.")
+        item = next((item for item in reversed(self.chat_messages) if item.get("reply")), None)
+        if item is None:
+            raise ValueError("Não há mensagem aguardando resposta.")
+        callback = item["reply"]
+        future = callback(value)
+        item["reply"] = None
+
+        def completed(result):
+            try:
+                delivered = result.result() is True
+            except Exception as exc:
+                event("remote_operation_failed", exc)
+                delivered = False
+            self.runner.events.put(("chat-delivery", (item, value, callback, delivered)))
+        future.add_done_callback(completed)
+        return future
+
+    def chat_delivered(self, value):
+        item, answer, callback, delivered = value
+        if delivered:
+            item["answer"] = answer
+        else:
+            item["reply"] = callback if self.session_ip else None
+            self.warning.set("Não foi possível entregar a resposta da mensagem.")
+        feedback = getattr(self, "chat_feedback", None)
+        if feedback is not None and feedback.winfo_exists():
+            feedback.configure(text="Resposta enviada." if delivered else "Não foi possível entregar a resposta.")
+        self.paint_chat()
 
     def show_diagnostics(self):
         details = diagnostics.report()
@@ -484,6 +593,7 @@ class App:
 
     def tray_action(self, action):
         if action == "ready":
+            self.tray.desired_active = getattr(self, "desired_active", self.active)
             self.tray.update(self.active, self.session_ip)
             self.on_unmap()
         elif action == "open":
@@ -514,6 +624,10 @@ class App:
     def session(self, ip):
         # Uso doméstico: sem aviso na tela. Só o ícone da bandeja fica vermelho.
         self.session_ip = ip
+        if not ip:
+            for item in getattr(self, "chat_messages", []):
+                item["reply"] = None
+        self.tray.desired_active = getattr(self, "desired_active", self.active)
         self.tray.update(self.active, ip)
         if not self.headless:
             self.render_update()
@@ -528,6 +642,10 @@ class App:
                         self.tray_action(value)
                 elif kind == "session":
                     self.session(value)
+                elif kind == "chat":
+                    self.receive_chat(value)
+                elif kind == "chat-delivery":
+                    self.chat_delivered(value)
                 elif kind == "warning":
                     self.warning.set(value)
                     if self.headless:
@@ -544,11 +662,14 @@ class App:
                 elif kind in ("ready", "off"):
                     self.pending = False
                     self.active = kind == "ready"
+                    self.tray.desired_active = self.desired_active
                     self.tray.update(self.active, self.session_ip)
                     self.fingerprint = value
                     if not self.active:
                         self.session("")
-                        if self.headless:
+                        if self.desired_active and not self.done.is_set():
+                            self.retry_activation_at = time.monotonic() + 5
+                        elif self.headless:
                             self.close()
                     if not self.headless:
                         self.render_activation()
@@ -560,6 +681,10 @@ class App:
             pass
         if self.update_monitor and not self.done.is_set():
             self.update_monitor.tick(self)
+        if (not self.done.is_set() and self.desired_active and not self.active and not self.pending
+                and time.monotonic() >= self.retry_activation_at):
+            self.retry_activation_at = float("inf")
+            self.toggle_agent(persist=False)
         if self.done.is_set():
             if not self.runner.thread or not self.runner.thread.is_alive():
                 self.root.destroy()
@@ -589,14 +714,16 @@ def launch(args, headless, auto):
     target = updater.installed()
     raw = os.environ.pop(updater.RESUME, None)
     state = json.loads(raw) if raw and target else None
-    app = App(root, args, state["headless"] if state else headless)
+    app = App(root, args, state["headless"] if state else headless or auto and autostart.enabled())
     diagnostic_sender = telemetry.Sender()
     if target:
         app.update_monitor = updater.Monitor(target, bool(state))
     if state:
         updater.restore(app, state)
-    elif not app.config.last_good.get("review_required") and (headless or auto and autostart.enabled()):
-        app.toggle_agent()
+    elif not app.config.last_good.get("review_required") and (headless or app.desired_active or
+            not app.activation_configured and auto and autostart.enabled()):
+        app.desired_active = True
+        app.toggle_agent(persist=False)
     try:
         root.mainloop()
     finally:

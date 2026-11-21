@@ -28,7 +28,7 @@
 
 O aplicativo encontra PCs na rede local e permite ver a tela de outro PC e usar o mouse e o teclado dele. A conexão fica na sua rede. O controle dispensa conta. O envio opcional de diagnósticos usa um receptor HTTPS do MKT com Marcos.
 
-No primeiro uso, você pode autorizar **Enviar diagnósticos automaticamente** quando ocorrer uma falha. Recusar mantém todos os recursos. A opção pode ser desligada nas Configurações, apagando a fila local pendente. O receptor encaminha os diagnósticos para relatos públicos no GitHub, sem exigir conta do usuário. Também existe a alternativa manual com revisão em **Configurações → Enviar diagnóstico**.
+No primeiro uso, você pode autorizar **Enviar diagnósticos automaticamente** durante o uso e em caso de falha. A versão 2 do consentimento inclui métricas de desempenho e pede nova autorização. Recusar mantém todos os recursos. A opção pode ser desligada nas Configurações, apagando a fila local pendente. O receptor encaminha os diagnósticos para relatos públicos no GitHub, sem exigir conta do usuário. Também existe a alternativa manual com revisão em **Configurações → Enviar diagnóstico**.
 
 > [!IMPORTANT]
 > Use apenas em PCs próprios ou com autorização do responsável, em uma rede sob seu controle. O PIN vem desligado. Enquanto o controle estiver ativado sem PIN, qualquer aparelho da rede local pode se conectar.
@@ -39,7 +39,7 @@ No primeiro uso, você pode autorizar **Enviar diagnósticos automaticamente** q
 2. No PC que você quer controlar, clique em **Ativar**. Ele aparece na lista dos outros PCs com nome, IP e situação (livre ou em uso).
 3. No seu PC, dê um duplo clique no nome da lista. Quando a tela remota abrir, clique nela para usar o mouse e o teclado.
 
-Durante toda a sessão, o PC controlado mostra uma faixa com o IP de quem está conectado.
+Durante a sessão, o ícone da bandeja indica controle ativo e permite abrir o aplicativo, desativar ou sair. Não há notificações de rotina ao recolher a janela.
 
 ## Funcionalidades
 
@@ -48,7 +48,7 @@ A tabela mostra o que está disponível na versão publicada e o que está previ
 | Área | O que faz | Estado |
 | --- | --- | --- |
 | Descoberta automática | Lista os PCs da rede com nome, IP e situação (livre ou em uso). Remove da lista os PCs que param de responder por dez segundos. | Disponível |
-| Tela | Envia a imagem quando ela muda e, se ficar igual, a cada dois segundos. A qualidade é ajustável e a captura vai de 1 a 20 quadros por segundo. | Disponível |
+| Tela | Envia a imagem quando ela muda e, se ficar igual, a cada dois segundos. A qualidade é ajustável e a captura vai de 1 a 60 quadros por segundo. Resolução automática, original e opções até 4K respeitam o monitor remoto. | Disponível |
 | Vários monitores | Permite escolher o monitor remoto para ver e controlar. | Disponível |
 | Mouse | Movimento, clique, arraste e rolagem vertical e horizontal. | Disponível |
 | Teclado | Digitação direta. A caixa Digitar texto envia até 500 caracteres, incluindo acentos. | Disponível |
@@ -59,11 +59,11 @@ A tabela mostra o que está disponível na versão publicada e o que está previ
 | Executável único | O arquivo `Mark Mouse e Teclado Control.exe` inclui o Python. | Disponível |
 | Instalador para Windows | Instalação com atalhos no menu Iniciar. | Em breve |
 | Executar como administrador | Controle de janelas que pedem permissão elevada. | Em breve |
-| Atualização automática | Verificação das atualizações por assinatura digital Ed25519. | Em breve |
-| Transferência de arquivos | Envio e recebimento de arquivos, com autorização própria. | Em breve |
-| Modo só visualizar | Visualização da tela sem controle de mouse e teclado. | Em breve |
-| Teclas especiais | Botões para combinações que o sistema reserva. | Em breve |
-| Chat | Mensagens entre quem controla e quem está no PC. | Em breve |
+| Atualização automática | Verificação ao abrir e a cada 15 minutos, assinatura Ed25519, espera por sessões e rollback em falhas. | Disponível na v0.6.0 |
+| Transferência de arquivos | Envio com permissão, integridade e cancelamento. | Disponível |
+| Modo só visualizar | Visualização da tela sem controle de mouse e teclado. | Disponível |
+| Teclas especiais | Botões para combinações suportadas pelo sistema. | Disponível |
+| Chat | Mensagens e respostas em Configurações → Mensagens da sessão, sem abrir janelas automaticamente. | Disponível |
 | Wake-on-LAN | Liga pela rede um PC que está desligado. | Em breve |
 | Histórico de conexões | Lista das últimas conexões. | Em breve |
 | Interface nova | Mudanças no visual do aplicativo. | Em breve |
@@ -73,7 +73,7 @@ A tabela mostra o que está disponível na versão publicada e o que está previ
 
 - O PC controlado aceita conexões de endereços da rede privada (como `192.168.x.x`, `10.x.x.x` e a faixa `172.16.0.0/12`) e do próprio computador. Conexões da internet são recusadas.
 - O PIN é opcional e tem oito dígitos. O aplicativo guarda o resumo scrypt do PIN. Você pode lembrar um aparelho depois de ele acertar o PIN e revogar todos os aparelhos lembrados em **Esquecer aparelhos**. Cinco erros seguidos do mesmo IP em cinco minutos bloqueiam novas tentativas por dez minutos.
-- Só pode haver uma sessão de controle por vez. O PC controlado toca um aviso quando a sessão começa e mostra o IP de quem está conectado.
+- Só pode haver uma sessão de controle por vez. O PC controlado indica a sessão ativa no ícone da bandeja.
 - No PC controlado, `Ctrl+Alt+Shift+Q` encerra a sessão na hora e solta teclas e botões que ficaram pressionados. A sessão também termina após 30 minutos sem uso.
 - O aplicativo mantém os dados na rede local e funciona sem baixar arquivos de terceiros. Os comandos remotos da versão atual se limitam ao mouse, ao teclado e à área de transferência.
 
@@ -225,10 +225,14 @@ Telas protegidas, como a confirmação do UAC no Windows, e atalhos que o sistem
 
 O aplicativo registra diagnósticos técnicos localmente: versão, sistema, eventos da janela/bandeja e tipo/localização de algumas falhas. Esses diagnósticos não incluem mensagens de exceção, caminhos completos, nomes de PCs, IPs, PINs, teclas digitadas, imagens da tela, arquivos transferidos ou conteúdo da área de transferência. O registro local da área de transferência guarda o tipo e o tamanho da operação; o conteúdo fica fora do registro.
 
-No Windows, os diagnósticos ficam em `%LOCALAPPDATA%\MarkControl\logs`; no Linux, em `$XDG_DATA_HOME/markcontrol/logs` (por padrão, `~/.local/share/markcontrol/logs`). Há até quatro arquivos de 256 KiB, com substituição dos mais antigos. **Configurações → Enviar diagnóstico** permite revisar um resumo dos eventos recentes antes de abrir um relato público no GitHub. É necessário entrar no GitHub e clicar em **Submit new issue** para enviar. O app não contém credenciais do GitHub. Com autorização, uma fila de até 50 eventos técnicos é enviada em lotes que incluam uma falha; sem internet, tenta novamente. O receptor guarda os registros por até 30 dias após a última ocorrência; relatos no GitHub permanecem públicos. Desligar o envio apaga a fila e impede novos lotes; uma requisição já em andamento pode terminar. Consulte a [página do app e privacidade](https://mktcommarcos.com.br/aplicacoes/mark-mouse-e-teclado-control/#privacidade).
+No Windows, os diagnósticos ficam em `%LOCALAPPDATA%\MarkControl\logs`; no Linux, em `$XDG_DATA_HOME/markcontrol/logs` (por padrão, `~/.local/share/markcontrol/logs`). Há até quatro arquivos de 256 KiB, com substituição dos mais antigos. **Configurações → Enviar diagnóstico** permite revisar um resumo dos eventos recentes antes de abrir um relato público no GitHub. É necessário entrar no GitHub e clicar em **Submit new issue** para enviar. O app não contém credenciais do GitHub. Com autorização, uma fila de até 50 eventos técnicos é enviada em lotes de até 25 por sessão, desempenho ou falha; sem internet, tenta novamente. O receptor guarda os registros por até 30 dias após a última ocorrência; relatos no GitHub permanecem públicos. Desligar o envio apaga a fila e impede novos lotes; uma requisição já em andamento pode terminar. Consulte a [página do app e privacidade](https://mktcommarcos.com.br/aplicacoes/mark-mouse-e-teclado-control/#privacidade).
 
 </details>
 
 ## Licença
 
 Distribuído sob a [licença MIT](LICENSE).
+
+## Atualização 0.6.0
+
+Baixe esta versão uma vez nos dois PCs. Versões anteriores não tinham o atualizador habilitado corretamente no executável direto. A partir da v0.6.0, atualizações assinadas são verificadas automaticamente quando habilitadas e há internet, aguardam a sessão terminar e preservam Ativo. Ativar também configura início com o sistema; Desativar e Sair continuam disponíveis. Consulte a [auditoria e validação](docs/AUDITORIA-0.6.0.md) e [diagnósticos](docs/DIAGNOSTICOS.md).

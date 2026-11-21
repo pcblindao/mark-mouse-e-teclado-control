@@ -5,6 +5,7 @@ import os
 import stat
 import re
 import threading
+import time
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from collections.abc import Callable
@@ -20,6 +21,7 @@ from .security import COMBOS, private_ip, valid_chat
 from .updater import session_lease
 from .wol import mac_bytes
 from .trust import Changed, Trust
+from .diagnostics import event
 
 
 class NeedPin(ValueError):
@@ -38,6 +40,7 @@ def prepare_frame(data, target):
             return frame.convert("RGB")
         scale = min(target[0] / frame.width, target[1] / frame.height)
         size = tuple(max(1, round(n * scale)) for n in frame.size)
+        frame.draft("RGB", size)
         image = frame.resize(size, Image.Resampling.LANCZOS, reducing_gap=3.0)
         return image if image.mode == "RGB" else image.convert("RGB")
 
@@ -55,11 +58,15 @@ class Client:
         self.peer = peer
         self.target = (1, 1)
         self.events = Queue(2)
+        self.frames = Queue(1)
         self.outgoing = Queue(128)
         self.closed = threading.Event()
         self.files = False
         self._upload = None
         self._lock = threading.Lock()
+        self._loop = self._write_ready = None
+        self.frame_epoch = 0
+        self.decode_ms = 0
 
     def set_view_only(self, enabled):
         if type(enabled) is not bool:
@@ -169,17 +176,58 @@ class Client:
             return
         try:
             self.outgoing.put_nowait(message)
+            if self._loop is not None and self._write_ready is not None:
+                try:
+                    self._loop.call_soon_threadsafe(self._write_ready.set)
+                except RuntimeError:
+                    pass
         except Full:
             if message["t"] != "move":
                 self.close()
 
     async def emit(self, kind, value=None):
+        if kind == "frame":
+            try:
+                self.frames.get_nowait()
+            except Empty:
+                pass
+            self.frames.put_nowait(value)
+            return
         while not self.closed.is_set():
             try:
                 self.events.put_nowait((kind, value))
                 return
             except Full:
                 await asyncio.sleep(0.015)
+
+    async def write_stream(self, ws):
+        self._loop = asyncio.get_running_loop()
+        self._write_ready = asyncio.Event()
+        try:
+            while True:
+                self._write_ready.clear()
+                while True:
+                    try:
+                        message = self.outgoing.get_nowait()
+                    except Empty:
+                        break
+                    await ws.send_json(message)
+                await self._write_ready.wait()
+        finally:
+            self._write_ready = self._loop = None
+
+    async def decode_stream(self, encoded, ready):
+        while True:
+            await ready.wait()
+            ready.clear()
+            if not encoded:
+                continue  # A monitor/info change can invalidate a signalled frame.
+            epoch, data = encoded.pop()
+            started = time.perf_counter()
+            image = await asyncio.to_thread(prepare_frame, data, self.target)
+            self.decode_ms = round((time.perf_counter() - started) * 1000)
+            if epoch == self.frame_epoch:
+                await self.emit("frame", image)
 
     def _run(self, pin, retrust):
         async def work():
@@ -199,6 +247,7 @@ class Client:
             except aiohttp.ServerFingerprintMismatch as exc:
                 await self.emit("changed", replace(self.peer, fingerprint=exc.got.hex(":")))
             except Exception as exc:
+                event("viewer_failed", exc)
                 await self.emit("error", str(exc) or "Conexão interrompida.")
             else:
                 await self.emit("end")
@@ -261,24 +310,17 @@ class Client:
                 trust.verified(peer, result["device_key"])
             async with http.ws_connect(f"wss://{base}/ws", protocols=("markcontrol", token),
                                        ssl=fingerprint, heartbeat=20, compress=0,
-                                       max_msg_size=16 << 20) as ws:
+                                       max_msg_size=32 << 20) as ws:
                 if ws.protocol != "markcontrol":
                     raise ValueError("Protocolo inesperado.")
                 replies = asyncio.Queue(1)
-
-                async def write():
-                    while True:
-                        try:
-                            message = self.outgoing.get_nowait()
-                        except Empty:
-                            await asyncio.sleep(0.01)
-                        else:
-                            await ws.send_json(message)
+                encoded, frame_ready = [], asyncio.Event()
 
                 async def read():
                     async for packet in ws:
                         if packet.type == aiohttp.WSMsgType.BINARY:
-                            await self.emit("frame", prepare_frame(packet.data, self.target))
+                            encoded[:] = [(self.frame_epoch, packet.data)]
+                            frame_ready.set()
                         elif packet.type == aiohttp.WSMsgType.TEXT:
                             if len(packet.data) > 620000:
                                 raise ValueError("Mensagem grande demais.")
@@ -296,6 +338,13 @@ class Client:
                                 await self.emit("chat", message["s"])
                             else:
                                 if kind == "info":
+                                    self.frame_epoch += 1
+                                    encoded.clear()
+                                    frame_ready.clear()
+                                    try:
+                                        self.frames.get_nowait()
+                                    except Empty:
+                                        pass
                                     caps = message.get("features", {})
                                     if not isinstance(caps, dict) or any(type(v) is not bool for v in caps.values()):
                                         raise ValueError("Capacidades inválidas.")
@@ -306,7 +355,8 @@ class Client:
                         elif packet.type == aiohttp.WSMsgType.ERROR:
                             raise ValueError("Conexão interrompida.")
 
-                tasks = [asyncio.create_task(read()), asyncio.create_task(write()),
+                tasks = [asyncio.create_task(read()), asyncio.create_task(self.write_stream(ws)),
+                         asyncio.create_task(self.decode_stream(encoded, frame_ready)),
                          asyncio.create_task(self._uploads(ws, replies))]
                 try:
                     done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)

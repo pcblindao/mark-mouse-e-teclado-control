@@ -15,6 +15,7 @@ const keys = new Map();
 let socket, clipboardEnabled = false, pendingClip, retryCopy;
 let ready = false, waitingMonitor = 0, epoch = 0, queued, drawing = false;
 let frames = 0, pingAt = 0, pingId = 0, latency;
+let streamOptions = false, highFps = false;
 let position = {x: 0.5, y: 0.5}, waitingMove = false;
 
 function status(text) {
@@ -126,8 +127,10 @@ function receive(data) {
     waitingMonitor = 0;
     queued = undefined;
     epoch++;
-    canvas.width = message.w;
-    canvas.height = message.h;
+    streamOptions = message.features?.stream_resolution === true;
+    highFps = message.features?.high_fps === true;
+    canvas.width = message.frame_size?.[0] || message.w;
+    canvas.height = message.frame_size?.[1] || message.h;
     const select = el("monitor");
     select.replaceChildren();
     for (let i = 1; i <= message.monitors; i++) {
@@ -191,15 +194,22 @@ function updateQuality(changeMonitor) {
     epoch++;
     el("monitor").disabled = true;
   }
-  send({t: "quality", q: Number(el("quality").value), fps: Number(el("fps").value), monitor});
+  const message = {t: "quality", q: Number(el("quality").value), fps: Math.min(Number(el("fps").value), highFps ? 60 : 20), monitor};
+  if (streamOptions) {
+    message.t = "stream";
+    message.height = el("resolution").value === "auto" ? (el("scale").value === "actual" ? 0 : Math.max(240, Math.min(2160, Math.round(innerHeight - 140)))) : Number(el("resolution").value);
+  }
+  send(message);
 }
 
 el("monitor").addEventListener("change", () => updateQuality(true));
 el("quality").addEventListener("change", () => updateQuality(false));
 el("scale").addEventListener("change", () => {
   el("viewport").classList.toggle("actual", el("scale").value === "actual");
+  updateQuality(false);
 });
 el("fps").addEventListener("change", () => updateQuality(false));
+el("resolution").addEventListener("change", () => updateQuality(false));
 el("disconnect").addEventListener("click", () => {
   releaseInput();
   socket?.close(1000);

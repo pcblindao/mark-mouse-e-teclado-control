@@ -2,6 +2,7 @@
 import hashlib
 import json
 import platform
+import re
 import threading
 import time
 import uuid
@@ -13,8 +14,8 @@ from .version import __version__
 
 # Set only after deploying and verifying the receiver over HTTPS.
 ENDPOINT = "https://mktcommarcos.com.br/api/mark-mouse-teclado/diagnostics"
-CONSENT_VERSION = 1
-from .diagnostic_schema import EVENTS, ERRORS, clean_record
+CONSENT_VERSION = 2
+from .diagnostic_schema import EVENTS, ERRORS, ACTIVITY, clean_record
 _lock = threading.RLock()
 
 
@@ -42,8 +43,20 @@ def set_preference(enabled, directory=None):
 
 def pending(directory):
     try:
-        value = read_json(directory / "diagnostic-pending.json", [])
-        return value[-50:] if isinstance(value, list) else []
+        path = directory / "diagnostic-pending.json"
+        if path.exists() and path.stat().st_size > 512 * 1024:
+            return []
+        value = read_json(path, [])
+        rows = []
+        for row in value[-50:] if isinstance(value, list) else []:
+            if (not isinstance(row, dict) or not isinstance(row.get("id"), str)
+                    or not re.fullmatch("[a-f0-9]{32}", row["id"])
+                    or type(row.get("time")) is not int or not 0 <= row["time"] < 100_000_000_000):
+                continue
+            record = clean_record(row.get("record"))
+            if record:
+                rows.append({"id": row["id"], "time": row["time"], "record": record})
+        return rows
     except (OSError, ValueError, RecursionError):
         return []
 
@@ -86,9 +99,14 @@ def send_pending(directory=None, endpoint=None, transport=transmit):
     with _lock:
         if not endpoint or preference(directory) is not True:
             return False
-        rows = pending(directory)
-        if not any(row["record"]["event"] in ERRORS for row in rows):
-            return False
+        all_rows = pending(directory)
+        rows = all_rows[-25:]
+        if not any(row["record"]["event"] in ERRORS | ACTIVITY for row in rows):
+            trigger = next((row for row in reversed(all_rows)
+                            if row["record"]["event"] in ERRORS | ACTIVITY), None)
+            if trigger is None:
+                return False
+            rows = [trigger, *rows[-24:]]
         ids = {row["id"] for row in rows}
         payload = {"schema": 1, "report_id": hashlib.sha256("".join(sorted(ids)).encode()).hexdigest(),
                    "version": __version__, "os": platform.system(),

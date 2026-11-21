@@ -8,6 +8,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor
 
 from aiohttp import WSMsgType, web
 
@@ -17,6 +18,7 @@ from .certs import tls_identity
 from .config import Config
 from .discovery import PORT, Discovery, local_addresses
 from .inputctl import Input
+from .diagnostics import event
 from .updater import session_lease
 from .security import MAX_MESSAGE, Authorization, Session, _object, decode_message, private_ip, valid_chat
 
@@ -79,7 +81,8 @@ class Control:
     monitors: int
     monitor: int = 1
     quality: int = 85
-    fps: int = 15
+    fps: int = 30
+    max_height: int = 0
     region: dict | None = None
     revision: int = 0
     view_only: bool = False
@@ -154,23 +157,31 @@ class Agent:
         self.stop(control, "expirada")
 
     async def stream(self, control):
-        clock = asyncio.get_running_loop().time
+        loop = asyncio.get_running_loop()
+        clock = loop.time
+        source = capture.StreamCapture()
+        executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="screen-capture")
         previous = geometry = None
         last_frame = float("-inf")
+        measured_at, frames, total_bytes, capture_ms, send_ms, samples = clock(), 0, 0, 0, 0, 0
         try:
             while control.session.alive():
                 started = clock()
+                paced_at = time.perf_counter()
                 revision, quality = control.revision, control.quality
-                monitor, count, region, stamp, jpeg = await asyncio.to_thread(
-                    capture.frame, control.monitor, quality, previous,
+                monitor, count, region, stamp, jpeg = await loop.run_in_executor(
+                    executor, source.frame, control.monitor, quality, previous,
                     geometry is None or geometry[0] != revision or started - last_frame >= 2,
+                    control.max_height,
                 )
                 if not control.session.alive():
                     return
+                capture_ms += round((clock() - started) * 1000)
+                samples += 1
                 if revision != control.revision or quality != control.quality:
                     continue
                 control.monitor, control.monitors = monitor, count
-                current = (revision, monitor, count, region)
+                current = (revision, monitor, count, region, self.allow_clipboard, self.allow_files)
                 if geometry != current:
                     control.use("screen")
                     geometry = current
@@ -179,19 +190,46 @@ class Agent:
                         "t": "info", "w": region["width"], "h": region["height"],
                         "features": {"files": self.allow_files, "view_only": True, "combo": True,
                                      "chat": True, "wol": bool(self.mac), "history": True,
-                                     "clipboard": self.allow_clipboard},
+                                     "clipboard": self.allow_clipboard, "high_fps": True,
+                                     "stream_resolution": True},
                         **({"mac": self.mac} if self.mac else {}),
                         "monitors": count, "monitor": monitor, "clipboard": self.allow_clipboard,
+                        "frame_size": capture.output_size(region["width"], region["height"], control.max_height),
                     })
                 if jpeg is not None and revision == control.revision and control.session.alive():
+                    sent_at = clock()
                     await control.ws.send_bytes(jpeg)
+                    send_ms += round((clock() - sent_at) * 1000)
+                    frames += 1
+                    total_bytes += len(jpeg)
                     previous, last_frame = stamp, clock()
-                await asyncio.sleep(max(0, 1 / control.fps - (clock() - started)))
-        except (ConnectionError, RuntimeError):
+                if clock() - measured_at >= 60:
+                    width, height = capture.output_size(region["width"], region["height"], control.max_height)
+                    event("stream_stats", metrics={"width": width, "height": height,
+                          "fps": round(frames / (clock() - measured_at)), "frames": frames,
+                          "bytes": min(total_bytes, 1_000_000_000), "capture_ms": capture_ms // max(1, samples),
+                          "send_ms": send_ms // max(1, frames)})
+                    measured_at, frames, total_bytes, capture_ms, send_ms, samples = clock(), 0, 0, 0, 0, 0
+                remaining = 1 / control.fps - (time.perf_counter() - paced_at)
+                if remaining > 0:
+                    # Windows asyncio timers may wake early within its coarse
+                    # clock resolution. Sleep off-loop to cap FPS without
+                    # spinning or delaying incoming input commands.
+                    await loop.run_in_executor(executor, time.sleep, remaining)
+                else:
+                    await asyncio.sleep(0)
+        except (ConnectionError, RuntimeError) as exc:
+            event("capture_failed", exc)
             self.stop(control, "conexão ou captura interrompida")
         except Exception as exc:
+            event("capture_failed", exc)
             print(f"Falha na captura: {type(exc).__name__}", flush=True)
             self.stop(control, "captura indisponível")
+        finally:
+            try:
+                await asyncio.shield(loop.run_in_executor(executor, source.close))
+            finally:
+                executor.shutdown(wait=False, cancel_futures=True)
 
     async def transfer(self, control, message):
         kind = message["t"]
@@ -257,6 +295,8 @@ class Agent:
                 answered = True
                 await control.ws.send_json({"t": "chat", "s": value})
                 control.use("chat_reply")
+                return True
+            return False
 
         def reply(value):
             if not valid_chat(value):
@@ -294,7 +334,7 @@ class Agent:
                 return
             control.next_chat = now + 1
             self.chat(control, message["s"])
-        elif kind == "quality":
+        elif kind in ("quality", "stream"):
             monitor = message["monitor"]
             if monitor > control.monitors:
                 await control.ws.send_json({"t": "error", "op": "quality"})
@@ -305,6 +345,10 @@ class Agent:
                 control.revision += 1
                 self.input.release_all()
             control.quality, control.fps = message["q"], message["fps"]
+            height = message.get("height", 0)
+            if height != control.max_height:
+                control.max_height = height
+                control.revision += 1
         elif kind.startswith("clip_"):
             if self.allow_clipboard:
                 control.use(kind)
@@ -352,6 +396,7 @@ class Agent:
             if not session.alive():
                 return ws
             self.notify("session", session.peer)
+            event("session_started")
             print(f"Mark Mouse e Teclado Control · SESSÃO ATIVA de {session.peer} — Ctrl+Alt+Shift+Q encerra", flush=True)
             tasks = [asyncio.create_task(self.stream(control)), asyncio.create_task(self.expire(control))]
             async for packet in ws:
@@ -365,8 +410,8 @@ class Agent:
                     self.stop(control, "mensagem inválida")
                     break
                 await self.handle(control, message)
-        except ConnectionError:
-            pass
+        except Exception as exc:
+            event("session_failed", exc)
         finally:
             if not session.stopped.is_set():
                 session.stopped.set()
@@ -388,6 +433,7 @@ class Agent:
             self.monitors = control.monitors
             self.control = None
             self.notify("session", "")
+            event("session_ended")
         return ws
 
 

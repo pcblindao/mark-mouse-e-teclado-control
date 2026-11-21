@@ -1,5 +1,6 @@
 """Assina localmente o executável da tag que está em checkout."""
 import argparse
+import base64
 import os
 import subprocess
 import sys
@@ -34,18 +35,22 @@ def main():
     parser.add_argument("exe", nargs="?", type=Path)
     parser.add_argument("--generate", type=Path)
     parser.add_argument("--key", type=Path)
+    parser.add_argument("--key-env", help="Nome da variável com a chave privada em base64.")
     args = parser.parse_args()
     path = args.generate or args.key
-    if not path or path.resolve().is_relative_to(ROOT):
+    if (not path and not args.key_env) or (path and path.resolve().is_relative_to(ROOT)):
         parser.error("Informe um arquivo de chave fora do repositório.")
     if args.generate:
-        if args.exe or args.key:
+        if args.exe or args.key or args.key_env:
             parser.error("Use --generate sozinho.")
         generate(path.resolve())
         return
     if not args.exe or args.exe.name not in (updater.WINDOWS, updater.LINUX):
         parser.error("Use o executável com o nome do anexo da release.")
-    key = Ed25519PrivateKey.from_private_bytes(path.read_bytes())
+    if args.key_env and path:
+        parser.error("Use --key ou --key-env.")
+    raw = base64.b64decode(os.environ[args.key_env], validate=True) if args.key_env else path.read_bytes()
+    key = Ed25519PrivateKey.from_private_bytes(raw)
     if key.public_key().public_bytes_raw().hex() != updater.PUBLIC_KEY_HEX:
         parser.error("A chave não corresponde à pública embutida.")
     with args.exe.open("rb") as stream:

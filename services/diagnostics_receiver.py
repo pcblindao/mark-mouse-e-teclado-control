@@ -12,7 +12,7 @@ from urllib.request import Request, urlopen
 
 from aiohttp import web
 
-from markcontrol.diagnostic_schema import ERRORS, clean_record
+from markcontrol.diagnostic_schema import ERRORS, ACTIVITY, clean_record
 
 REPO = "pcblindao/mark-mouse-e-teclado-control"
 PATH = "/api/mark-mouse-teclado/diagnostics"
@@ -42,7 +42,10 @@ def validate(value):
         if row["event"] in ERRORS:
             errors.append(record)
     if not errors:
-        raise ValueError("missing error")
+        activity = sorted({row["event"] for row in rows} & ACTIVITY)
+        if not activity:
+            raise ValueError("missing diagnostic event")
+        errors = ["activity", int(time.time()) // 86400]
     signature = json.dumps([value["version"], value["os"], errors], sort_keys=True)
     return hashlib.sha256(signature.encode()).hexdigest()
 
@@ -57,6 +60,10 @@ class Store:
             last_seen INTEGER NOT NULL, occurrences INTEGER NOT NULL DEFAULT 1, issue INTEGER);
           CREATE TABLE IF NOT EXISTS receipts (id TEXT PRIMARY KEY, received INTEGER NOT NULL);
         """)
+        if "published_at" not in {row[1] for row in self.db.execute("PRAGMA table_info(reports)")}:
+            self.db.execute("ALTER TABLE reports ADD COLUMN published_at INTEGER NOT NULL DEFAULT 0")
+            self.db.execute("UPDATE reports SET published_at=last_seen WHERE issue IS NOT NULL")
+            self.db.commit()
 
     def purge(self):
         cutoff = int(time.time()) - 30 * 86400
@@ -78,8 +85,13 @@ class Store:
                 raise OverflowError("storage quota")
             self.db.execute("INSERT INTO receipts VALUES (?, ?)", (payload["report_id"], now))
             self.db.execute("""INSERT INTO reports(signature,payload,received,last_seen) VALUES(?,?,?,?)
-                ON CONFLICT(signature) DO UPDATE SET last_seen=excluded.last_seen, occurrences=occurrences+1""",
+                ON CONFLICT(signature) DO UPDATE SET last_seen=excluded.last_seen, occurrences=occurrences+1,
+                payload=excluded.payload""",
                 (signature, json.dumps(payload), now, now))
+
+
+STORE = web.AppKey("store", Store)
+TOKEN = web.AppKey("token", str)
 
 
 def github(token, method, path, value=None):
@@ -92,32 +104,36 @@ def github(token, method, path, value=None):
         return json.loads(response.read(2_000_000))
 
 
-def publish(token, signature, raw):
+def publish(token, signature, raw, issue_number=None, occurrences=1):
     title = "[Diagnóstico automático " + signature[:20] + "]"
     # Recover after an uncertain response from POST without creating duplicates.
-    recent = github(token, "GET", "/issues?state=all&sort=created&direction=desc&per_page=100")
+    recent = [] if issue_number else github(token, "GET", "/issues?state=all&sort=created&direction=desc&per_page=100")
     for issue in recent:
         if issue.get("title") == title:
-            return issue["number"]
+            issue_number = issue["number"]
+            break
     payload = json.loads(raw)
     body = ("Diagnóstico técnico enviado automaticamente com autorização no aplicativo.\n\n"
-            "Relatos com a mesma assinatura são agrupados pelo receptor.\n\n```json\n" +
+            f"Lotes recebidos neste grupo: {occurrences}. Abaixo está o diagnóstico mais recente.\n\n```json\n" +
             json.dumps(payload, ensure_ascii=True, indent=2) + "\n```")
+    if issue_number:
+        github(token, "PATCH", "/issues/" + str(issue_number), {"body": body})
+        return issue_number
     issue = github(token, "POST", "/issues", {"title": title, "body": body})
     return issue["number"]
 
 
 async def worker(app):
-    store, token = app["store"], app["token"]
+    store, token = app[STORE], app[TOKEN]
     try:
         while True:
             store.purge()
-            row = store.db.execute("SELECT signature,payload FROM reports WHERE issue IS NULL ORDER BY received LIMIT 1").fetchone()
+            row = store.db.execute("SELECT signature,payload,issue,occurrences,last_seen FROM reports WHERE issue IS NULL OR published_at < last_seen ORDER BY received LIMIT 1").fetchone()
             if row and token:
                 try:
-                    issue = await asyncio.to_thread(publish, token, *row)
+                    issue = await asyncio.to_thread(publish, token, *row[:4])
                     with store.db:
-                        store.db.execute("UPDATE reports SET issue=? WHERE signature=?", (issue, row[0]))
+                        store.db.execute("UPDATE reports SET issue=?,published_at=? WHERE signature=?", (issue, row[4], row[0]))
                 except Exception as exc:
                     # No payloads, token or exception messages in service logs.
                     print("github_delivery_failed " + type(exc).__name__, flush=True)
@@ -128,7 +144,7 @@ async def worker(app):
 
 def create_app(path, token):
     app = web.Application(client_max_size=64000)
-    app["store"], app["token"] = Store(path), token
+    app[STORE], app[TOKEN] = Store(path), token
     limits = defaultdict(deque)
 
     async def receive(request):
@@ -155,20 +171,20 @@ def create_app(path, token):
         except (ValueError, TypeError, KeyError, AttributeError, RecursionError):
             raise web.HTTPBadRequest() from None
         try:
-            app["store"].accept(payload, signature)
+            app[STORE].accept(payload, signature)
         except OverflowError:
             raise web.HTTPTooManyRequests() from None
         return web.json_response({"accepted": payload["report_id"]}, status=202)
 
     async def health(request):
-        return web.json_response({"status": "ok", "github_configured": bool(token)})
+        return web.json_response({"status": "ok", "github_configured": bool(token), "receiver_schema": 2})
 
     async def lifecycle(app):
         task = asyncio.create_task(worker(app))
         yield
         task.cancel()
         await task
-        app["store"].db.close()
+        app[STORE].db.close()
 
     app.router.add_post(PATH, receive)
     app.router.add_get(PATH + "/health", health)

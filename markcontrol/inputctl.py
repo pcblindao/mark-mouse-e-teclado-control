@@ -2,6 +2,7 @@ import asyncio
 import sys
 
 from .security import NAMED_KEYS
+from .diagnostics import event
 
 
 class Input:
@@ -82,7 +83,8 @@ class Input:
             for value in held:
                 try:
                     controller.release(value)
-                except Exception:
+                except Exception as exc:
+                    event("input_release_failed", exc)
                     failed = True
             held.clear()
         if failed:

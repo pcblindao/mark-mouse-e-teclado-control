@@ -77,7 +77,7 @@ class Config:
 
     @staticmethod
     def defaults():
-        return dict(name=socket.gethostname(), clipboard=True, files=True, quality=85, pin=None, devices=[])
+        return dict(name=socket.gethostname(), clipboard=True, files=True, quality=85, pin=None, devices=[], agent_enabled=False)
 
     def read(self):
         cfg = read_json(self.path, None if self.had_file else self.defaults())
@@ -94,7 +94,19 @@ class Config:
         if type(cfg["auto_update"]) is not bool:
             raise ValueError("Opção de atualização inválida.")
         cfg.setdefault("files", True)
+        if "agent_enabled" in cfg and type(cfg["agent_enabled"]) is not bool:
+            raise ValueError("Opção de ativação inválida.")
         return cfg
+
+    def set_agent_enabled(self, enabled):
+        if type(enabled) is not bool:
+            raise ValueError("Opção de ativação inválida.")
+        with lock(self.path):
+            cfg = self.read()
+            if enabled and cfg.get("review_required"):
+                raise ValueError("Revise e salve as configurações antes de ativar este PC.")
+            cfg["agent_enabled"] = enabled
+            write_json(self.path, cfg)
 
     def refresh(self, warn, *, opening=False):
         # Cada instância pertence a uma única thread. Só avançar o marcador

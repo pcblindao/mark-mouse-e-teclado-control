@@ -32,7 +32,7 @@ class GuiTests(unittest.TestCase):
         ui.root.withdraw.assert_called_once()
         ui.root.deiconify.assert_not_called()
 
-    def test_tray_fallback_and_single_notice(self):
+    def test_tray_fallback_without_notifications(self):
         ui = SimpleNamespace(root=Mock(), tray=Mock(), session_ip="", notified=False)
         ui.tray.ready.is_set.return_value = False
         app.App.hide(ui)
@@ -42,7 +42,7 @@ class GuiTests(unittest.TestCase):
         app.App.hide(ui)
         app.App.hide(ui)
         self.assertEqual(ui.root.withdraw.call_count, 2)
-        ui.tray.icon.notify.assert_called_once()
+        ui.tray.icon.notify.assert_not_called()
 
     def test_view_only_blocks_local_input(self):
         ui = SimpleNamespace(photo=True, view_only=True, clip=True, client=Mock())

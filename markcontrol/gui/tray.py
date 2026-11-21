@@ -12,6 +12,7 @@ class Tray:
         self.events = events
         self.icon = None
         self.active = False
+        self.desired_active = None
         self.session = False
         self.ready = threading.Event()
         self.finished = threading.Event()
@@ -40,7 +41,8 @@ class Tray:
 
     @property
     def toggle_label(self):
-        return "Desativar este PC" if self.active else "Ativar este PC"
+        desired = self.active if self.desired_active is None else self.desired_active
+        return "Desativar este PC" if desired else "Ativar este PC"
 
     def post(self, action):
         self.events.put(("tray", action))
@@ -77,6 +79,7 @@ class Tray:
         if self.ready.is_set():
             try:
                 self.icon.icon = self.images[self.session]
+                self.icon.title = TITLE + (" — Sessão de controle ativa" if self.session else "")
                 self.icon.update_menu()
             except Exception as exc:
                 event("tray_update_failed", exc)

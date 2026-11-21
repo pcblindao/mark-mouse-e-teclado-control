@@ -51,8 +51,13 @@ def issue_url(details):
     })
 
 
-def event(name, error=None):
+def event(name, error=None, *, metrics=None):
     record = {"event": name, "version": __version__}
+    if metrics:
+        from .diagnostic_schema import clean_record
+        cleaned = clean_record({"event": name, "metrics": metrics})
+        if cleaned and "metrics" in cleaned:
+            record["metrics"] = cleaned["metrics"]
     if error is not None:
         record["error_type"] = type(error).__name__
         record["frames"] = [

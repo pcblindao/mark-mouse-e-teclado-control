@@ -153,7 +153,10 @@ RULES = {
             and m["k"] in KEYS and m["d"] in ("down", "up")),
     "text": ("s", lambda m: _text(m["s"])),
     "quality": ("q fps monitor", lambda m: _integer(m["q"], 30, 95)
-                and _integer(m["fps"], 1, 20) and _integer(m["monitor"], 1, 256)),
+                and _integer(m["fps"], 1, 60) and _integer(m["monitor"], 1, 256)),
+    "stream": ("q fps monitor height", lambda m: _integer(m["q"], 30, 95)
+               and _integer(m["fps"], 1, 60) and _integer(m["monitor"], 1, 256)
+               and (m["height"] == 0 and type(m["height"]) is int or _integer(m["height"], 240, 4320))),
     "ping": ("n", lambda m: _integer(m["n"], 0, 2**31 - 1)),
     "clip_set": ("s", lambda m: _clipboard(m["s"])),
     "clip_get": ("", lambda m: True),

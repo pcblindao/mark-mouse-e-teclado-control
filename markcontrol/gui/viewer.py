@@ -66,7 +66,9 @@ class Viewer(tk.Toplevel):
         install_icon(self)
         self.peer = peer
         self.title(f"{TITLE} · {peer.name} · {peer.ip}")
-        self.geometry(f"{px(self, 1040)}x{px(self, 650)}")
+        width = min(px(self, 1440), self.winfo_screenwidth() - px(self, 48))
+        height = min(px(self, 900), self.winfo_screenheight() - px(self, 100))
+        self.geometry(f"{max(320, width)}x{max(240, height)}")
         self.minsize(px(self, 620), px(self, 360))
         self.configure(bg=BG)
         self.features = ()
@@ -81,7 +83,10 @@ class Viewer(tk.Toplevel):
         self.status = tk.StringVar(value="Conectando…")
         self.stats = tk.StringVar()
         self.q = tk.StringVar(value=str(cfg["quality"]))
-        self.fps = tk.StringVar(value="15")
+        self.fps = tk.StringVar(value="30")
+        self.resolution = tk.StringVar(value="Automática")
+        self.source_size = self.stream_size = None
+        self.resize_timer = None
         self.scale_mode = tk.StringVar(value="Ajustar à janela")
         self.monitor = tk.StringVar(value="1")
         self.local_clip = cfg["clipboard"]
@@ -91,6 +96,7 @@ class Viewer(tk.Toplevel):
         self.frames = self.ping = 0
         self.rtt = "—"
         self.tick = time.monotonic()
+        self.last_diagnostic = self.tick
         self.pos = dict(x=0.5, y=0.5)
         u = lambda n: px(self, n)
         shell = Card(self, 650, BG, "#2c4052", pad=(4, 3), radius=14, shadow=True)
@@ -129,12 +135,15 @@ class Viewer(tk.Toplevel):
         selectors.grid(row=0, column=1, sticky="e", padx=u(8))
         for caption, var, choices, width in (
             ("Qualidade", self.q, sorted({30, cfg["quality"], 65, 85, 90, 95}), 116),
-            ("FPS", self.fps, (1, 5, 12, 15, 20), 78), ("Monitor", self.monitor, (1,), 99),
+            ("FPS", self.fps, (5, 15, 20, 30, 45, 60), 78), ("Monitor", self.monitor, (1,), 99),
+            ("Resolução", self.resolution, ("Automática", "Original", "720p", "1080p", "1440p", "2160p"), 166),
         ):
             select = Selector(selectors, caption, var, choices, lambda v=var: self.quality(v is self.monitor), width)
             select.pack(side="left", padx=(u(7), 0))
             if var is self.monitor:
                 self.monitors = select
+            if var is self.fps:
+                self.fps_selector = select
 
         def fit(event):
             narrow = event.width < pc.winfo_reqwidth()+selectors.winfo_reqwidth()+actions.winfo_reqwidth()+u(42)
@@ -173,7 +182,7 @@ class Viewer(tk.Toplevel):
         self.canvas.bind("<KeyPress>", lambda e: self.key(e, True))
         self.canvas.bind("<KeyRelease>", lambda e: self.key(e, False))
         self.connect()
-        self.timer = self.after(20, self.poll)
+        self.timer = self.after(8, self.poll)
 
     def toggle_fullscreen(self, _=None):
         self.fullscreen = not self.fullscreen
@@ -395,8 +404,17 @@ class Viewer(tk.Toplevel):
             self.release()
             self.waiting = int(self.monitor.get())
             self.blank()
-        self.client.send(dict(t="quality", q=int(self.q.get()), fps=int(self.fps.get()),
-                              monitor=int(self.monitor.get())))
+        caps = self.features if isinstance(self.features, dict) else {}
+        fps = min(int(self.fps.get()), 60 if caps.get("high_fps") else 20)
+        message = dict(t="quality", q=int(self.q.get()), fps=fps, monitor=int(self.monitor.get()))
+        if caps.get("stream_resolution"):
+            choice = self.resolution.get()
+            height = (max(240, min(2160, self.canvas.winfo_height()))
+                      if choice == "Automática" and self.scale_mode.get() != "Tamanho real"
+                      else 0 if choice == "Automática"
+                      else 0 if choice == "Original" else int(choice[:-1]))
+            message.update(t="stream", height=height)
+        self.client.send(message)
 
     def key(self, e, down):
         if not self.photo or getattr(self, "view_only", False):
@@ -464,6 +482,7 @@ class Viewer(tk.Toplevel):
             self.horizontal.pack_forget()
             self.vertical.pack_forget()
         self.configure_canvas()
+        self.quality()
         self.canvas.focus_set()
 
     def configure_canvas(self, event=None):
@@ -480,6 +499,10 @@ class Viewer(tk.Toplevel):
             self.canvas.configure(scrollregion=(0, 0, w, h))
             self.canvas.xview_moveto(0)
             self.canvas.yview_moveto(0)
+        if event is not None and self.resolution.get() == "Automática":
+            if self.resize_timer is not None:
+                self.after_cancel(self.resize_timer)
+            self.resize_timer = self.after(200, self.quality)
 
     def draw(self, frame):
         self.photo = ImageTk.PhotoImage(frame, master=self)
@@ -503,9 +526,13 @@ class Viewer(tk.Toplevel):
             self.clip = self.local_clip and m["clipboard"] is True
             self.online = True
             self.features = m.get("features", ())
+            self.source_size = (m["w"], m["h"])
+            self.stream_size = m.get("frame_size", self.source_size)
+            self.fps_selector.choices = (5, 15, 20, 30, 45, 60) if isinstance(self.features, dict) and self.features.get("high_fps") else (5, 15, 20)
             self.refresh_tools()
             self.quality()
             self.status.set("Conectado")
+            event("viewer_connected")
             self.canvas.focus_set()
         elif kind == "clip" and self.pending_copy and self.clip:
             self.pending_copy = False
@@ -557,6 +584,21 @@ class Viewer(tk.Toplevel):
             self.client.close()
             self.blank()
             self.status.set("Resposta inválida ou exibição indisponível.")
+        if not self.waiting and not self.client.closed.is_set():
+            try:
+                latest = self.client.frames.get_nowait()
+                first = self.photo is None
+                self.draw(latest)
+                if first:
+                    self.refresh_tools()
+                self.frames += 1
+            except Empty:
+                pass
+            except (ValueError, TypeError, OSError, tk.TclError) as exc:
+                event("remote_operation_failed", exc)
+                self.client.close()
+                self.blank()
+                self.status.set("Exibição indisponível. Reconecte ao PC.")
         if self.photo and self.client.closed.is_set() and self.client.events.empty():
             self.blank()
             self.clip = False
@@ -572,8 +614,15 @@ class Viewer(tk.Toplevel):
                 self.status.set(message)
         now = time.monotonic()
         if self.photo and now-self.tick >= 1:
-            self.stats.set(f"{round(self.frames/(now-self.tick))} FPS · {self.rtt} ms")
+            measured_fps = round(self.frames / (now-self.tick))
+            if now - self.last_diagnostic >= 60:
+                size = self.stream_size or (0, 0)
+                event("viewer_stats", metrics={"width": size[0], "height": size[1], "fps": measured_fps,
+                      "decode_ms": self.client.decode_ms, "rtt_ms": int(self.rtt) if str(self.rtt).isdigit() else 0})
+                self.last_diagnostic = now
+            resolution = f"{self.stream_size[0]}×{self.stream_size[1]} · " if self.stream_size else ""
+            self.stats.set(f"{resolution}{round(self.frames/(now-self.tick))} FPS · {self.rtt} ms")
             self.tick, self.frames = now, 0
             self.ping = (self.ping+1) % 2**31
             self.client.send(dict(t="ping", n=self.ping))
-        self.timer = self.after(20, self.poll)
+        self.timer = self.after(8, self.poll)
