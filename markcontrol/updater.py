@@ -362,10 +362,10 @@ class Monitor:
         self.cancel = threading.Event()
 
     def tick(self, app):
-        enabled = app.config.last_good.get("auto_update", True)
-        if not enabled:
-            self.cancel.set()
-            self.next_check = 0
+        # Atualização sempre automática (0.7.2): a antiga preferência "Atualizar
+        # sozinho" é ignorada. Com sessão em andamento, a sessão é encerrada, o app
+        # se atualiza e volta ativado sozinho (restore reativa o agente).
+        enabled = True
         if self.future and self.future.done():
             try:
                 self.job = self.future.result()
@@ -379,11 +379,15 @@ class Monitor:
                 self.job = None
             elif self.cancel.is_set():
                 self.abort(stage)
+            elif app.session_ip and not app.pending and not getattr(self, "ending_session", False):
+                # A sessão segura a troca (lease compartilhado): encerra para atualizar.
+                self.ending_session = True
+                event("update_ends_session")
+                app.status.set("Atualizando: a sessão foi encerrada e o app volta em instantes.")
+                app.runner.stop()
             elif not app.pending and not app.session_ip and (stage / "armed").is_file():
+                self.ending_session = False
                 try:
-                    if not app.config.read().get("auto_update", True):
-                        self.abort(stage)
-                        return
                     write_json(stage / "go", snapshot(app))
                 except (OSError, ValueError):
                     self.abort(stage)
@@ -440,18 +444,36 @@ def restore(app, state):
     app.root.after(100, acknowledge)
 
 
-def elevate(app, argv):
-    """Uma versão anterior sem elevação atualizou para esta: reabre como administrador."""
+def elevate(app, argv, *, delay=200):
+    """Esta cópia roda sem elevação: pede o UAC sem travar a interface e, aceito, encerra.
+
+    A cópia elevada espera este processo terminar antes de assumir a instância.
+    """
     from . import elevation
-    if app.done.is_set() or not elevation.required() or elevation.is_elevated():
+    if app.done.is_set() or not elevation.required() or elevation.is_elevated() or not elevation.can_elevate():
         return
-    try:
-        accepted = elevation.relaunch(list(argv))
-    except OSError as exc:
-        event("elevation_failed", exc)
-        return
-    if accepted:
-        event("elevation_after_update")
-        app.close()
-    else:
-        event("elevation_refused")
+    result = {}
+
+    def ask():
+        try:
+            result["accepted"] = elevation.relaunch(list(argv))
+        except OSError as exc:
+            result["error"] = exc
+
+    worker = threading.Thread(target=ask, name="elevation", daemon=True)
+    worker.start()
+
+    def check():
+        if worker.is_alive():
+            app.root.after(delay, check)
+            return
+        if "error" in result:
+            event("elevation_failed", result["error"])
+        elif result.get("accepted"):
+            event("elevation_restart")
+            app.close()
+        else:
+            event("elevation_refused")
+            app.warning.set("Rodando sem administrador: janelas de administrador não recebem cliques. "
+                            "Abra o app de novo e aceite o aviso do Windows.")
+    app.root.after(delay, check)

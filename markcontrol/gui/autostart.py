@@ -66,6 +66,13 @@ def enabled():
 
 
 def set_enabled(value):
+    if os.name == "nt" and not task_mode():
+        from .. import elevation
+        if elevation.required():
+            with suppress(OSError):
+                if elevation.task_exists():
+                    # Só uma cópia elevada altera a tarefa; não recria a entrada Run.
+                    return
     if os.name == "nt" and task_mode():
         from .. import elevation
         if value:

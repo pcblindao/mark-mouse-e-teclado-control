@@ -259,14 +259,29 @@ window.addEventListener("mousemove", (event) => {
     if (canInput() && socket.bufferedAmount < 4096) send({t: "move", ...position});
   });
 });
+const wheelAcc = {x: 0, y: 0};
 canvas.addEventListener("wheel", (event) => {
   if (!canInput()) return;
   event.preventDefault();
   position = at(event);
-  const step = (delta) => -Math.sign(delta) * Math.min(20,
-    Math.ceil(Math.abs(delta) / (event.deltaMode === 0 ? 100 : 1)));
+  // Acumula em "pixels" (100 = um entalhe; linha = 1/3; página = 10 entalhes) e guarda a sobra,
+  // para touchpads não rolarem rápido demais. No pynput dx > 0 vai para a direita e dy > 0 sobe.
+  const scale = event.deltaMode === 1 ? 100 / 3 : event.deltaMode === 2 ? 1000 : 1;
+  const notches = (axis, delta) => {
+    if (wheelAcc[axis] * delta < 0) wheelAcc[axis] = 0;
+    wheelAcc[axis] += delta * scale;
+    const n = Math.trunc(wheelAcc[axis] / 100);
+    wheelAcc[axis] -= n * 100;
+    return n;
+  };
+  let dx = notches("x", event.deltaX), dy = -notches("y", event.deltaY);
   send({t: "move", ...position});
-  send({t: "scroll", dx: step(event.deltaX), dy: step(event.deltaY)});
+  while (dx || dy) {
+    const px = Math.max(-20, Math.min(20, dx)), py = Math.max(-20, Math.min(20, dy));
+    send({t: "scroll", dx: px, dy: py});
+    dx -= px;
+    dy -= py;
+  }
 }, {passive: false});
 
 document.addEventListener("keydown", (event) => {
@@ -279,10 +294,22 @@ document.addEventListener("keydown", (event) => {
     return;
   }
   if (!canInput() || document.activeElement !== canvas) return;
-  if (!named.has(key) && !/^[!-~]$/.test(key)) return;
+  if (!named.has(key) && !/^[!-~]$/.test(key)) {
+    // Caractere fora do ASCII (ç, á, º, §...): vai como texto. AltGr chega como Ctrl+Alt.
+    if (/^\P{C}$/u.test(key) && key.codePointAt(0) > 0x7e && !event.metaKey
+        && (!event.ctrlKey || event.altKey)) {
+      event.preventDefault();
+      send({t: "text", s: key});
+    }
+    return;
+  }
   event.preventDefault();
   const code = event.code || key;
-  if (keys.has(code)) return;
+  if (keys.has(code)) {
+    // Tecla segurada: repete o "down" no PC remoto; um único "up" a solta.
+    if (event.repeat) send({t: "key", k: keys.get(code), d: "down"});
+    return;
+  }
   const k = /^[A-Z]$/.test(key) ? key.toLowerCase() : key;
   if (![...keys.values()].includes(k)) send({t: "key", k, d: "down"});
   keys.set(code, k);

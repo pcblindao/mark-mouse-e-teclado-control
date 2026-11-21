@@ -5,6 +5,41 @@ from .security import NAMED_KEYS
 from .diagnostics import event
 
 COMBO_STEP = 0.03
+KEYEVENTF_KEYUP = 0x0002
+KEYEVENTF_UNICODE = 0x0004
+
+
+def unicode_units(char):
+    """Unidades UTF-16 de um caractere (par substituto acima de 0xFFFF)."""
+    data = char.encode("utf-16-le", "surrogatepass")
+    return [int.from_bytes(data[i:i + 2], "little") for i in range(0, len(data), 2)]
+
+
+def send_unicode(char):
+    """Digita via KEYEVENTF_UNICODE: independe do Caps Lock e do layout do PC remoto."""
+    import ctypes
+    from ctypes import wintypes
+
+    class KEYBDINPUT(ctypes.Structure):
+        _fields_ = [("wVk", wintypes.WORD), ("wScan", wintypes.WORD), ("dwFlags", wintypes.DWORD),
+                    ("time", wintypes.DWORD), ("dwExtraInfo", ctypes.c_size_t)]
+
+    class MOUSEINPUT(ctypes.Structure):
+        _fields_ = [("dx", wintypes.LONG), ("dy", wintypes.LONG), ("mouseData", wintypes.DWORD),
+                    ("dwFlags", wintypes.DWORD), ("time", wintypes.DWORD),
+                    ("dwExtraInfo", ctypes.c_size_t)]
+
+    class UNION(ctypes.Union):
+        _fields_ = [("ki", KEYBDINPUT), ("mi", MOUSEINPUT)]
+
+    class INPUT(ctypes.Structure):
+        _fields_ = [("type", wintypes.DWORD), ("u", UNION)]
+
+    events = [INPUT(type=1, u=UNION(ki=KEYBDINPUT(0, unit, KEYEVENTF_UNICODE | up, 0, 0)))
+              for unit in unicode_units(char) for up in (0, KEYEVENTF_KEYUP)]
+    array = (INPUT * len(events))(*events)
+    if ctypes.windll.user32.SendInput(len(events), array, ctypes.sizeof(INPUT)) != len(events):
+        raise OSError("O sistema recusou a digitação.")
 
 
 class Input:
@@ -34,7 +69,9 @@ class Input:
 
     @staticmethod
     def _press(controller, held, value, direction):
-        if direction == "down" and value not in held:
+        if direction == "down":
+            # Repetição automática: tecla já pressionada recebe outro press, como no
+            # teclado local; um único "up" a solta.
             controller.press(value)
             held.add(value)
         elif direction == "up" and value in held:
@@ -89,6 +126,8 @@ class Input:
                 if char in "\n\r\t":
                     key = self.keys["Tab" if char == "\t" else "Enter"]
                     self.keyboard.tap(key)
+                elif sys.platform == "win32":
+                    send_unicode(char)
                 else:
                     self.keyboard.type(char)
                 await asyncio.sleep(0)

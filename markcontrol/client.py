@@ -84,6 +84,28 @@ class OutgoingQueue(Queue):
             self.dropped_moves += 1
 
 
+REFUSALS = {
+    403: "O PC remoto não permite essa transferência (arquivos desativados ou modo somente ver).",
+    409: "Aguarde a transferência atual terminar.",
+    413: "Conteúdo acima do limite: arquivos até 512 MiB, imagens até 32 MiB.",
+}
+
+
+async def refusal(response):
+    """Mensagem para o usuário a partir da recusa HTTP do agente."""
+    if response.status in REFUSALS:
+        return REFUSALS[response.status]
+    text = ""
+    if response.content_type == "text/plain" and (response.content_length or 0) <= 300:
+        try:
+            text = (await response.content.read(300)).decode("utf-8", "replace").strip()
+        except (OSError, ValueError):
+            text = ""
+    if text and text.isprintable() and not text.startswith(("400", "Bad Request")):
+        return text
+    return "Área de transferência recusada pelo PC remoto."
+
+
 class Client:
     """Uma tentativa por instância. A interface consome events na sua própria thread."""
     def __init__(self, peer):
@@ -114,11 +136,23 @@ class Client:
     def paste_clipboard(self, paste_after=False):
         return self._schedule_clipboard("paste", paste_after)
 
-    def copy_clipboard(self, copy_first=False):
-        return self._schedule_clipboard("copy", copy_first)
+    def copy_clipboard(self, copy_first=False, cut=False):
+        if type(cut) is not bool:
+            raise ValueError("Opção de área de transferência inválida.")
+        cut = cut and copy_first is True and getattr(self, "clipboard_cut", False)
+        return self._schedule_clipboard("copy", "cut" if cut else copy_first)
+
+    def clipboard_from_remote(self):
+        """True quando a área de transferência local ainda é a que veio do remoto.
+
+        Nesse caso Ctrl+V deve colar no remoto o que ele já tem, sem reenviar
+        (reenviar perderia formatos como células do Excel e anularia o Ctrl+X).
+        """
+        current = clipboard.sequence_number()
+        return current is not None and current == getattr(self, "_pulled_sequence", None)
 
     def _schedule_clipboard(self, direction, shortcut):
-        if type(shortcut) is not bool:
+        if type(shortcut) is not bool and not (direction == "copy" and shortcut == "cut"):
             raise ValueError("Opção de área de transferência inválida.")
         with self._lock:
             context = self._clipboard_context
@@ -183,7 +217,7 @@ class Client:
                                         headers=headers, data=body(), ssl=fingerprint, allow_redirects=False,
                                         timeout=timeout) as response:
                         if response.status != 200:
-                            raise clipboard.ClipboardError("Área de transferência recusada.")
+                            raise clipboard.ClipboardError(await refusal(response))
                         length = response.content_length
                         if length is None or not 0 < length <= 1024:
                             raise clipboard.ClipboardError("Confirmação de transferência inválida.")
@@ -191,12 +225,17 @@ class Client:
                         if json.loads(raw) != {"ok": True}:
                             raise clipboard.ClipboardError("Confirmação de transferência inválida.")
                 else:
-                    async with http.get(url, params={"copy_first": "1" if shortcut else "0"},
+                    params = {"copy_first": "1" if shortcut else "0"}
+                    if shortcut == "cut":
+                        params["cut"] = "1"
+                    async with http.get(url, params=params,
                                         headers=headers, ssl=fingerprint, allow_redirects=False,
                                         timeout=timeout) as response:
-                        if (response.status != 200 or response.content_type != MIME
+                        if response.status != 200:
+                            raise clipboard.ClipboardError(await refusal(response))
+                        if (response.content_type != MIME
                                 or response.content_length is not None and response.content_length > MAX_BUNDLE_BYTES):
-                            raise clipboard.ClipboardError("Área de transferência recusada.")
+                            raise clipboard.ClipboardError("Área de transferência acima do limite.")
                         received = 0
                         with path.open("xb") as output:
                             async for data in response.content.iter_chunked(CHUNK):
@@ -211,6 +250,7 @@ class Client:
                     payload = await blocking(apply_bundle, path, data_dir() / "clipboard-received", active, cancelled=cancelled)
                     check()
                     await clipboard.write_payload(payload, active)
+                    self._pulled_sequence = clipboard.sequence_number()
                 if self._clipboard_context is context and not self.closed.is_set():
                     await self.emit("clipboard_ok", {"direction": direction, "kind": kind})
         except asyncio.CancelledError:
@@ -218,7 +258,9 @@ class Client:
         except Exception as exc:
             event("clipboard_failed", exc)
             if self._clipboard_context is context and not self.closed.is_set():
-                await self.emit("clipboard_error", "Não foi possível transferir a área de transferência. Verifique a conexão e as permissões.")
+                detail = str(exc) if isinstance(exc, clipboard.ClipboardError) and str(exc) else (
+                    "Não foi possível transferir a área de transferência. Verifique a conexão e as permissões.")
+                await self.emit("clipboard_error", detail)
         finally:
             cancelled.set()
             with self._lock:
@@ -482,7 +524,8 @@ class Client:
                         if detail == {"error": "Não dá para controlar o próprio PC"}:
                             raise ValueError(detail["error"])
                 if response.status == 401:
-                    raise NeedPin("Informe o PIN para parear este PC.")
+                    raise NeedPin("PIN incorreto. Confira os 8 dígitos e tente de novo." if pin is not None
+                                  else "Informe o PIN para parear este PC.")
                 if response.status != 200:
                     raise ValueError({409: "PC em uso.", 429: "Tentativas bloqueadas."}.get(
                         response.status, f"Login recusado (HTTP {response.status})."))
@@ -542,6 +585,7 @@ class Client:
                                         mac_bytes(message["mac"])
                                     self.files = caps.get("files", False)
                                     self.clipboard_rich = caps.get("clipboard_rich", False)
+                                    self.clipboard_cut = caps.get("clipboard_cut", False)
                                     self._clipboard_enabled = message.get("clipboard") is True
                                 elif kind == "view_only":
                                     self._clipboard_read_only = message.get("enabled") is True

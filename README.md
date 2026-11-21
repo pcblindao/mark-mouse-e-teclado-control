@@ -75,7 +75,7 @@ A tabela mostra o que está disponível na versão publicada e o que está previ
 - O PIN é opcional e tem oito dígitos. O aplicativo guarda o resumo scrypt do PIN. Você pode lembrar um aparelho depois de ele acertar o PIN e revogar todos os aparelhos lembrados em **Esquecer aparelhos**. Cinco erros seguidos do mesmo IP em cinco minutos bloqueiam novas tentativas por dez minutos.
 - Só pode haver uma sessão de controle por vez. O PC controlado indica a sessão ativa no ícone da bandeja.
 - No PC controlado, `Ctrl+Alt+Shift+Q` encerra a sessão na hora e solta teclas e botões que ficaram pressionados. A sessão também termina após 30 minutos sem uso.
-- O aplicativo mantém os dados na rede local e funciona sem baixar arquivos de terceiros. Os comandos remotos da versão atual se limitam ao mouse, ao teclado e à área de transferência.
+- O aplicativo mantém os dados na rede local e funciona sem baixar arquivos de terceiros. Os comandos remotos se limitam ao mouse, teclado, área de transferência, envio de arquivos e mensagens.
 
 ### HTTPS
 
@@ -98,7 +98,7 @@ flowchart LR
         ENT["Mouse e teclado"]
         CLIP["Área de transferência"]
         DESC["Descoberta<br/>UDP 47800"]
-        FAIXA["Faixa de aviso<br/>e Ctrl+Alt+Shift+Q"]
+        FAIXA["Aviso na bandeja<br/>e Ctrl+Alt+Shift+Q"]
         AG --> SEG
         AG --> CAP
         AG --> ENT
@@ -117,19 +117,19 @@ Veja a [arquitetura](docs/ARQUITETURA.md) e a [lista completa de funcionalidades
 ### Windows 10 e 11
 
 1. Baixe `MarkMouseTecladoControl-Setup-0.7.2.exe` na página de [Releases](https://github.com/pcblindao/mark-mouse-e-teclado-control/releases/latest).
-2. Abra o arquivo com um duplo clique. O executável já inclui o Python e roda sem instalação.
+2. Abra o Setup com um duplo clique e confirme o aviso do Windows (o app roda como administrador para controlar todas as janelas). O executável já inclui o Python.
 3. Faça o mesmo no outro PC.
 4. Na primeira vez que clicar em **Ativar**, o Firewall do Windows pede permissão. Marque somente Redes privadas e clique em Permitir acesso.
 
-O Setup é a opção oficial para Windows. Na v0.7.1 ele registra uma instalação no perfil do usuário, substitui a cópia anterior no mesmo diretório e preserva configurações e aceites. Abrir novamente reutiliza a instância existente. O nome da janela e a entrada em Aplicativos Instalados exibem a versão. Consulte [instalação e validação](docs/INSTALADOR-WINDOWS.md).
+O Setup é a opção oficial para Windows. Desde a v0.7.1 ele registra uma instalação no perfil do usuário, substitui a cópia anterior no mesmo diretório e preserva configurações e aceites. Abrir novamente reutiliza a instância existente. O nome da janela e a entrada em Aplicativos Instalados exibem a versão. Consulte [instalação e validação](docs/INSTALADOR-WINDOWS.md).
 
 ### Linux (X11)
 
-As Releases ainda não têm executável para Linux. Use o código-fonte como descrito abaixo ou compile o executável com `sh scripts/build.sh`. Você precisa estar em uma sessão X11.
+Baixe `markcontrol-linux-x64` na página de Releases, dê permissão de execução (`chmod +x markcontrol-linux-x64`) e abra numa sessão X11. Também é possível usar o código-fonte como descrito abaixo.
 
 ### Atualizar o aplicativo
 
-Desative a inicialização automática e feche o aplicativo nos dois PCs. Atualize os dois antes de conectar. O aplicativo usa o nome, as configurações e os aparelhos lembrados que já estiverem salvos no perfil atual.
+Não é preciso fazer nada: o app verifica atualizações ao abrir e a cada 15 minutos e instala sozinho a versão assinada. Se houver uma sessão em andamento, ela é encerrada, o app se atualiza e volta ativado em instantes. Nome, PIN, aparelhos lembrados e demais configurações ficam no perfil do usuário e são preservados.
 
 ## Instalar a partir do código-fonte
 
@@ -216,7 +216,7 @@ O controle foi feito para a rede local e só aceita conexões de endereços priv
 <details>
 <summary>Por que algumas telas ou atalhos não respondem?</summary>
 
-Desde a v0.7.2 o app sempre roda como administrador no Windows, então janelas elevadas recebem cliques e teclas. A tela de confirmação do UAC (área de trabalho segura) e o Ctrl+Alt+Del continuam fora de alcance de qualquer programa comum. Se o PC remoto recusar o UAC, o visualizador avisa quando um clique cair numa janela de administrador.
+Desde a v0.7.2 o app sempre roda como administrador no Windows, então janelas elevadas recebem cliques e teclas. A tela de confirmação do UAC (área de trabalho segura) e o Ctrl+Alt+Del continuam fora de alcance de qualquer programa comum. Se o PC remoto rodar sem administrador (UAC recusado ou usuário padrão do Windows), o app continua funcionando, avisa na janela e o visualizador avisa quando um clique cair numa janela de administrador.
 
 </details>
 
@@ -235,7 +235,7 @@ Distribuído sob a [licença MIT](LICENSE).
 
 ## Atualização 0.6.0
 
-Baixe esta versão uma vez nos dois PCs. Versões anteriores não tinham o atualizador habilitado corretamente no executável direto. A partir da v0.6.0, atualizações assinadas são verificadas automaticamente quando habilitadas e há internet, aguardam a sessão terminar e preservam Ativo. Ativar também configura início com o sistema; Desativar e Sair continuam disponíveis. Consulte a [auditoria e validação](docs/AUDITORIA-0.6.0.md) e [diagnósticos](docs/DIAGNOSTICOS.md).
+Baixe esta versão uma vez nos dois PCs. Versões anteriores não tinham o atualizador habilitado corretamente no executável direto. A partir da v0.6.0, atualizações assinadas são verificadas automaticamente quando há internet e preservam Ativo (desde a v0.7.2 sempre ativas; uma sessão em andamento é encerrada para atualizar). Ativar também configura início com o sistema; Desativar e Sair continuam disponíveis. Consulte a [auditoria e validação](docs/AUDITORIA-0.6.0.md) e [diagnósticos](docs/DIAGNOSTICOS.md).
 
 ## Atualização 0.7.0
 
@@ -243,4 +243,11 @@ Baixe esta versão uma vez nos dois PCs. Versões anteriores não tinham o atual
 
 ## Atualização 0.7.2
 
-Cliques e teclas voltam a funcionar em janelas de administrador do PC acessado: o aplicativo agora sempre abre como administrador no Windows e o início automático usa uma tarefa agendada elevada. Os botões de teclas especiais (Win, Win+D, Ctrl+Shift+Esc, Bloquear tela e o novo Alt+F4) eram recusados pelo próprio visualizador e foram corrigidos. Consulte [detalhes e validação](docs/ADMINISTRADOR-0.7.2.md).
+- **Janelas de administrador:** cliques e teclas voltam a funcionar no Gerenciador de Tarefas, instaladores e programas elevados. No Windows o app sempre abre como administrador e o início com o Windows usa uma tarefa agendada elevada, sem aviso do UAC no logon.
+- **Teclas especiais:** Win, Win+D, Ctrl+Shift+Esc e Bloquear tela eram recusados pelo próprio visualizador; agora funcionam, e Alt+F4 entrou no menu.
+- **Mouse e teclado:** tecla segurada repete, `Ctrl` com sinais (Ctrl+-, Ctrl+/), ç e acentos no visualizador web, rolagem horizontal na direção certa e rolagem proporcional no touchpad; "Digitar texto" não inverte maiúsculas com Caps Lock remoto.
+- **Área de transferência e arquivos:** Ctrl+X e copiar/colar dentro do PC remoto mantêm o conteúdo original; erros mostram o motivo; o envio de arquivo mostra o resultado e pode ser cancelado; o PC remoto avisa onde salvou, na pasta Downloads real.
+- **Atualização sempre automática:** sem precisar fazer nada; se houver sessão, ela é encerrada e o app volta atualizado. Configurações, PIN e pareamentos são preservados.
+- **Outros:** aviso de PIN incorreto, "Ativar ao iniciar" também ativa o PC, mensagens de status que não ficavam presas e documentação revisada.
+
+Consulte [detalhes e validação](docs/ADMINISTRADOR-0.7.2.md).

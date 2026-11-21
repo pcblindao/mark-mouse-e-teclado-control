@@ -255,7 +255,7 @@ class App:
         quality = tk.IntVar(value=cfg["quality"])
         clip = tk.BooleanVar(value=cfg["clipboard"])
         protected = tk.BooleanVar(value=cfg["pin"] is not None)
-        updates = tk.BooleanVar(value=cfg.get("auto_update", True))
+
         diagnostic_auto = tk.BooleanVar(value=telemetry.preference() is True)
         files = tk.BooleanVar(value=cfg.get("files", True))
         auto = tk.BooleanVar(value=autostart.enabled())
@@ -279,7 +279,6 @@ class App:
         tk.Frame(form, bg=LINE, height=1).pack(fill="x")
         option("Permitir copiar e colar", clip)
         option("Permitir transferir arquivos", files)
-        option("Atualizar sozinho", updates)
         option("Enviar diagnósticos automaticamente", diagnostic_auto)
         label(form, "Somente com autorização. Relatos técnicos públicos no GitHub.",
               color=MUTED, face="MarkSmall", wraplength=u(325), justify="left").pack(anchor="w")
@@ -311,7 +310,7 @@ class App:
                     if not cfg["pin"]:
                         raise ValueError("Defina um PIN de oito dígitos.")
                     pin = None
-                self.config.save(name.get(), clip.get(), quality.get(), pin, files=files.get(), auto_update=updates.get())
+                self.config.save(name.get(), clip.get(), quality.get(), pin, files=files.get(), auto_update=True)
                 telemetry.set_preference(diagnostic_auto.get())
                 cfg = self.config.refresh(self.warning.set)
                 self.warning.set("")
@@ -323,8 +322,12 @@ class App:
                     except Exception as exc:
                         report(f"Preferências salvas. Falha na inicialização: {exc}")
                         return
+                    if auto.get() and not self.desired_active:
+                        # "Ativar ao iniciar" também deixa este PC ativado agora e no logon.
+                        self.toggle_agent()
                 self.close_panel()
                 self.status.set("Configuração salva.")
+                self.root.after(4000, lambda: self.status.get() == "Configuração salva." and self.status.set(""))
             except (ValueError, OSError) as exc:
                 report(str(exc))
 
@@ -435,7 +438,11 @@ class App:
             result = self.found.get()
             if isinstance(result, str):
                 self.status.set(result)
+                self.discovery_error = True
                 continue
+            if getattr(self, "discovery_error", False):
+                self.discovery_error = False
+                self.status.set("")
             self.primary, replies = result
             self.replies.update(replies)
 
@@ -763,6 +770,11 @@ def launch(args, headless, auto):
         app.desired_active = True
         app.toggle_agent(persist=False)
     installation.mark_ready()
+    if not state:
+        from .. import elevation
+        if elevation.should_relaunch(sys.argv[1:]):
+            # Início automático antes da tarefa elevada existir: pede o UAC em segundo plano.
+            root.after(2000, lambda: updater.elevate(app, sys.argv[1:]))
     try:
         root.mainloop()
     finally:

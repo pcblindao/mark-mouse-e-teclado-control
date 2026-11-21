@@ -17,6 +17,30 @@ def valid_name(name):
             and not RESERVED.fullmatch(name.partition(".")[0].rstrip(" ")))
 
 
+def downloads_dir():
+    """Pasta Downloads real do usuário (o Windows permite movê-la para outro disco ou OneDrive)."""
+    if os.name == "nt":
+        try:
+            import ctypes
+            from ctypes import wintypes
+            import uuid
+            folder = uuid.UUID("374DE290-123F-4565-9164-39C4925E467B")  # FOLDERID_Downloads
+            guid = (ctypes.c_byte * 16).from_buffer_copy(folder.bytes_le)
+            path = ctypes.c_wchar_p()
+            shell = ctypes.WinDLL("shell32")
+            shell.SHGetKnownFolderPath.argtypes = [ctypes.c_void_p, wintypes.DWORD, wintypes.HANDLE,
+                                                   ctypes.POINTER(ctypes.c_wchar_p)]
+            if shell.SHGetKnownFolderPath(ctypes.byref(guid), 0, None, ctypes.byref(path)) == 0:
+                try:
+                    if path.value:
+                        return Path(path.value)
+                finally:
+                    ctypes.windll.ole32.CoTaskMemFree(path)
+        except (OSError, AttributeError, ValueError):
+            pass
+    return Path.home() / "Downloads"
+
+
 def valid_size(size):
     return type(size) is int and 0 <= size <= MAX_FILE
 
@@ -25,7 +49,7 @@ class Receiver:
     def __init__(self, name, size, directory=None):
         if not valid_name(name) or not valid_size(size):
             raise ValueError("Cabeçalho inválido.")
-        self.directory = directory or Path.home() / "Downloads" / "Mark Mouse e Teclado Control"
+        self.directory = directory or downloads_dir() / "Mark Mouse e Teclado Control"
         self.directory.mkdir(parents=True, exist_ok=True, mode=0o700)
         if self.directory.resolve() != self.directory.parent.resolve() / self.directory.name:
             raise ValueError("Diretório redirecionado.")
@@ -55,7 +79,7 @@ class Receiver:
                     os.rename(self.temp.name, target)
                 else:
                     os.link(self.temp.name, target)
-                return
+                return target
             except FileExistsError:
                 continue
         raise ValueError("Limite de nomes repetidos.")

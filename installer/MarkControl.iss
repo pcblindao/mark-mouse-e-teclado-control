@@ -66,7 +66,7 @@ Filename: "{app}\MarkMouseTecladoControl.exe"; Parameters: "--after-install --au
 
 [UninstallRun]
 ; A tarefa elevada de início automático só pode ser removida com privilégio.
-Filename: "{sys}\schtasks.exe"; Parameters: "/Delete /TN ""Mark Mouse e Teclado Control"" /F"; Flags: runhidden shellexec waituntilterminated; Verb: "runas"; RunOnceId: "DeleteElevatedTask"
+Filename: "{sys}\schtasks.exe"; Parameters: "/Delete /TN ""Mark Mouse e Teclado Control - {username}"" /F"; Flags: runhidden shellexec waituntilterminated; Verb: "runas"; RunOnceId: "DeleteElevatedTask"; Check: ElevatedTaskExists
 
 [UninstallDelete]
 ; Only program-owned installation artifacts; never the separate MarkControl profile.
@@ -83,6 +83,15 @@ begin
   if Base = '' then
     Base := ExpandConstant('{localappdata}');
   Result := AddBackslash(Base) + 'Programs\MarkControl';
+end;
+
+function ElevatedTaskExists: Boolean;
+var
+  ExitCode: Integer;
+begin
+  { Consulta sem elevação; o UAC só aparece se a tarefa existir. }
+  Result := Exec(ExpandConstant('{sys}\schtasks.exe'), '/Query /TN "Mark Mouse e Teclado Control - ' + GetUserNameString + '"', '',
+    SW_HIDE, ewWaitUntilTerminated, ExitCode) and (ExitCode = 0);
 end;
 
 function ShouldStartApplication: Boolean;

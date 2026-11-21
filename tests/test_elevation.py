@@ -85,19 +85,64 @@ def test_agent_warns_controller_about_admin_window():
 
 
 def test_update_from_unelevated_version_reopens_as_admin(monkeypatch):
-    app = SimpleNamespace(done=Mock(is_set=lambda: False), close=Mock())
+    def run(accepted):
+        pending = []
+        app = SimpleNamespace(done=Mock(is_set=lambda: False), close=Mock(), warning=Mock(),
+                              root=SimpleNamespace(after=lambda ms, f: pending.append(f)))
+        relaunch = Mock(return_value=accepted)
+        monkeypatch.setattr(elevation, "relaunch", relaunch)
+        updater.elevate(app, ["--autostart"])
+        while pending:
+            pending.pop(0)()
+        relaunch.assert_called_once_with(["--autostart"])
+        return app
+
     monkeypatch.setattr(elevation, "required", lambda: True)
     monkeypatch.setattr(elevation, "is_elevated", lambda: False)
-    relaunch = Mock(return_value=True)
-    monkeypatch.setattr(elevation, "relaunch", relaunch)
-    updater.elevate(app, ["--autostart"])
-    relaunch.assert_called_once_with(["--autostart"])
+    monkeypatch.setattr(elevation, "can_elevate", lambda: True)
+    app = run(True)
     app.close.assert_called_once()
-
-    relaunch.return_value = False
-    app.close.reset_mock()
-    updater.elevate(app, [])
+    app = run(False)
     app.close.assert_not_called()
+    app.warning.set.assert_called_once()
+
+
+def test_standard_user_or_relaunched_copy_is_not_elevated_again(monkeypatch):
+    monkeypatch.setattr(elevation, "required", lambda: True)
+    monkeypatch.setattr(elevation, "is_elevated", lambda: False)
+    monkeypatch.setattr(elevation, "can_elevate", lambda: False)
+    assert not elevation.should_relaunch(["--autostart"])
+    monkeypatch.setattr(elevation, "can_elevate", lambda: True)
+    assert elevation.should_relaunch(["--autostart"])
+    assert not elevation.should_relaunch([elevation.WAIT_PREVIOUS])
+    argv = ["exe", "--autostart", elevation.WAIT_PREVIOUS, "1234"]
+    assert elevation.take_wait_previous(argv) == 1234 and argv == ["exe", "--autostart"]
+    assert elevation.take_wait_previous(argv) is None
+
+
+def test_update_ends_active_session_then_applies(tmp_path):
+    stage = tmp_path / "release-1"
+    stage.mkdir()
+    process = Mock(poll=Mock(return_value=None))
+    app = SimpleNamespace(pending=False, session_ip="10.0.0.2", status=Mock(), runner=Mock(),
+                          config=SimpleNamespace(last_good={}), close=Mock(), active=True,
+                          desired_active=True, headless=True, root=SimpleNamespace(state=lambda: "withdrawn"))
+    monitor = updater.Monitor.__new__(updater.Monitor)
+    monitor.future, monitor.job, monitor.cancel = None, (stage, process), Mock(is_set=lambda: False)
+    monitor.tick(app)
+    app.runner.stop.assert_called_once()
+    monitor.tick(app)
+    app.runner.stop.assert_called_once()  # Não repete enquanto a sessão encerra.
+    app.session_ip, app.active = "", False
+    (stage / "armed").touch()
+    monitor.tick(app)
+    app.close.assert_called_once()
+    assert json.loads((stage / "go").read_text())["desired_active"] is True
+
+
+def test_task_name_is_per_user(monkeypatch):
+    monkeypatch.setenv("USERNAME", "Ana/Silva")
+    assert elevation._task_name() == "Mark Mouse e Teclado Control - AnaSilva"
 
 
 def test_every_toolbar_shortcut_passes_client_validation():

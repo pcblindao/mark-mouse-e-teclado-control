@@ -23,7 +23,13 @@ from contextlib import suppress
 from pathlib import Path
 from xml.sax.saxutils import escape
 
-TASK_NAME = "Mark Mouse e Teclado Control"
+def _task_name():
+    # Uma tarefa por usuário do Windows: /F de um usuário não sobrescreve a de outro.
+    user = os.environ.get("USERNAME") or "usuario"
+    return "Mark Mouse e Teclado Control - " + "".join(c for c in user if c not in '\\/:*?"<>|')
+
+
+TASK_NAME = _task_name()
 WAIT_PREVIOUS = "--wait-previous"
 
 TOKEN_QUERY = 0x0008
@@ -255,11 +261,54 @@ def required():
     return supported() and bool(getattr(sys, "frozen", False))
 
 
-def relaunch(argv):
-    """Reabre o executável atual elevado (UAC). Retorna False se o usuário cancelar."""
+TOKEN_ELEVATION_TYPE = 18
+ELEVATION_LIMITED = 3  # Administrador com token filtrado pelo UAC.
+
+
+def can_elevate():
+    """True somente para um administrador rodando com o token filtrado do UAC.
+
+    Um usuário padrão teria de digitar a senha de outra conta, e o app passaria
+    a rodar no perfil dessa outra conta (sem pareamentos, Downloads errado).
+    """
+    if not supported():
+        return False
     import ctypes
     from ctypes import wintypes
-    args = [arg for arg in argv if arg != WAIT_PREVIOUS] + [WAIT_PREVIOUS]
+    advapi = ctypes.WinDLL("advapi32", use_last_error=True)
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel.GetCurrentProcess.restype = wintypes.HANDLE
+    advapi.OpenProcessToken.argtypes = [wintypes.HANDLE, wintypes.DWORD, ctypes.POINTER(wintypes.HANDLE)]
+    advapi.GetTokenInformation.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p,
+                                           wintypes.DWORD, ctypes.POINTER(wintypes.DWORD)]
+    kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+    token = wintypes.HANDLE()
+    if not advapi.OpenProcessToken(kernel.GetCurrentProcess(), TOKEN_QUERY, ctypes.byref(token)):
+        return False
+    try:
+        value, size = wintypes.DWORD(), wintypes.DWORD()
+        if not advapi.GetTokenInformation(token, TOKEN_ELEVATION_TYPE, ctypes.byref(value),
+                                          ctypes.sizeof(value), ctypes.byref(size)):
+            return False
+        return value.value == ELEVATION_LIMITED
+    finally:
+        kernel.CloseHandle(token)
+
+
+def should_relaunch(argv):
+    """Executável Windows sem elevação, que pode elevar, e que não é já um relançamento."""
+    return (required() and WAIT_PREVIOUS not in argv
+            and not is_elevated() and can_elevate())
+
+
+def relaunch(argv):
+    """Reabre o executável atual elevado (UAC). Retorna False se o usuário cancelar.
+
+    Bloqueia até o usuário responder ao UAC: nunca chamar na thread da interface.
+    """
+    import ctypes
+    from ctypes import wintypes
+    args = [arg for arg in argv if arg != WAIT_PREVIOUS] + [WAIT_PREVIOUS, str(os.getpid())]
     shell = ctypes.WinDLL("shell32", use_last_error=True)
     shell.ShellExecuteW.argtypes = [wintypes.HWND, wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.LPCWSTR,
                                     wintypes.LPCWSTR, ctypes.c_int]
@@ -273,11 +322,35 @@ def relaunch(argv):
     raise OSError(f"O Windows não iniciou o aplicativo como administrador (código {code}).")
 
 
-def wait_previous(folder, timeout=20):
-    """A cópia não elevada encerra depois de pedir o UAC; espera ela soltar a instância."""
-    from . import installation
-    installation.wait_for(lambda: installation.notify(folder, "status") is None, timeout)
-    installation.wait_for(lambda: not installation.product_port_busy(), 5)
+def take_wait_previous(argv):
+    """Remove `--wait-previous <pid>` de argv e devolve o PID (ou None)."""
+    if WAIT_PREVIOUS not in argv:
+        return None
+    index = argv.index(WAIT_PREVIOUS)
+    del argv[index]
+    if index < len(argv) and argv[index].isdigit():
+        return int(argv.pop(index))
+    return 0
+
+
+def wait_process(pid, timeout=60):
+    """Espera a cópia sem elevação que pediu o UAC terminar (ela solta instância e porta)."""
+    if not pid or not supported():
+        return True
+    import ctypes
+    from ctypes import wintypes
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel.OpenProcess.restype = wintypes.HANDLE
+    kernel.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+    kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+    handle = kernel.OpenProcess(0x00100000, False, pid)  # SYNCHRONIZE
+    if not handle:
+        return True  # Já terminou.
+    try:
+        return kernel.WaitForSingleObject(handle, int(timeout * 1000)) == 0
+    finally:
+        kernel.CloseHandle(handle)
 
 
 def refuse_message():

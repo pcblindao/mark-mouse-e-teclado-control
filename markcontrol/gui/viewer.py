@@ -2,7 +2,7 @@ import threading
 import time
 import tkinter as tk
 from queue import Empty
-from tkinter import filedialog, ttk
+from tkinter import filedialog, messagebox, ttk
 
 from PIL import ImageTk
 
@@ -47,6 +47,16 @@ ALIASES = {
     "Win_R": "Meta", "Meta_L": "Meta", "Meta_R": "Meta", "Next": "PageDown",
     "Prior": "PageUp", "Right": "ArrowRight", "Shift_L": "Shift", "Shift_R": "Shift",
     "ISO_Left_Tab": "Tab", "Up": "ArrowUp", "space": " ",
+    # Pontuação: com Ctrl o Tk entrega um char de controle (ou vazio), então o keysym decide.
+    "minus": "-", "equal": "=", "slash": "/", "comma": ",", "period": ".",
+    "semicolon": ";", "apostrophe": "'", "bracketleft": "[", "bracketright": "]",
+    "backslash": "\\", "grave": "`", "plus": "+",
+    # Teclado numérico (com e sem NumLock).
+    "KP_Add": "+", "KP_Subtract": "-", "KP_Multiply": "*", "KP_Divide": "/", "KP_Decimal": ".",
+    **{f"KP_{i}": str(i) for i in range(10)},
+    "KP_Home": "Home", "KP_End": "End", "KP_Prior": "PageUp", "KP_Next": "PageDown",
+    "KP_Up": "ArrowUp", "KP_Down": "ArrowDown", "KP_Left": "ArrowLeft", "KP_Right": "ArrowRight",
+    "KP_Insert": "Insert", "KP_Delete": "Delete",
 }
 
 
@@ -61,6 +71,11 @@ def protocol_key(keysym, char=""):
     return None
 
 
+FILE_RESULTS = {
+    "file_ok": "Arquivo enviado. No PC remoto: pasta Downloads › Mark Mouse e Teclado Control.",
+    "file_error": "O PC remoto recusou o arquivo (envio desativado, sem espaço ou nome inválido).",
+    "file_cancelled": "Envio de arquivo cancelado.",
+}
 ADMIN_WINDOW_NOTICE = ("Janela de administrador no PC remoto: o Windows bloqueou o clique. "
                        "Abra o app do PC remoto como administrador.")
 
@@ -178,9 +193,14 @@ class Viewer(tk.Toplevel):
         for i, button in enumerate(("left", "middle", "right"), 1):
             for event, direction in (("ButtonPress", "down"), ("ButtonRelease", "up")):
                 self.canvas.bind(f"<{event}-{i}>", lambda e, b=button, d=direction: self.pointer(e, "click", b, d))
-        self.canvas.bind("<MouseWheel>", lambda e: self.wheel(e, 1 if e.delta > 0 else -1))
+        self.canvas.bind("<MouseWheel>", lambda e: self.wheel(e, delta=e.delta))
         for i, step in ((4, 1), (5, -1)):
             self.canvas.bind(f"<Button-{i}>", lambda e, s=step: self.wheel(e, s))
+        for i, step in ((6, -1), (7, 1)):  # X11: rolagem horizontal (esquerda/direita)
+            try:
+                self.canvas.bind(f"<Button-{i}>", lambda e, s=step: self.wheel(e, s, horizontal=True))
+            except tk.TclError:  # Tk 8.6 só aceita botões 1-5
+                break
         self.canvas.bind("<F11>", self.toggle_fullscreen)
         self.canvas.bind("<KeyRelease-F11>", lambda _: "break")
         self.canvas.bind("<KeyPress>", lambda e: self.key(e, True))
@@ -251,7 +271,14 @@ class Viewer(tk.Toplevel):
     def send_file(self):
         client = self.client
         method = feature_method(client, self.features, "send_file")
-        if not method or client.closed.is_set() or self.transfer and self.transfer.is_alive():
+        if not method or client.closed.is_set():
+            return
+        if getattr(self, "uploading", False):
+            if messagebox.askyesno("Enviar arquivo", "Cancelar o envio em andamento?", parent=self):
+                cancel = getattr(client, "cancel_file", None)
+                if callable(cancel):
+                    cancel()
+                self.status.set("Cancelando envio…")
             return
         path = filedialog.askopenfilename(parent=self, title="Enviar arquivo")
         if not path or client.closed.is_set():
@@ -267,10 +294,12 @@ class Viewer(tk.Toplevel):
             try:
                 method(path, progress)
             except Exception as exc:
+                self.uploading = False
                 event("file_transfer_failed", exc)
                 self.progress = client, f"Falha no envio: {exc}"
 
-        self.status.set("Enviando arquivo…")
+        self.status.set("Enviando arquivo… clique de novo em Enviar arquivo para cancelar.")
+        self.uploading = True
         self.transfer = threading.Thread(target=send, daemon=True)
         self.transfer.start()
 
@@ -397,6 +426,12 @@ class Viewer(tk.Toplevel):
     def paste(self):
         if self.clip and not self.view_only:
             if Viewer.rich_clipboard(self):
+                if self.client.clipboard_from_remote() is True:
+                    # O conteúdo veio do próprio remoto: só colar lá, sem reenviar.
+                    for key, direction in (("Control", "down"), ("v", "down"), ("v", "up"), ("Control", "up")):
+                        self.client.send(dict(t="key", k=key, d=direction))
+                    self.status.set("Colado no remoto.")
+                    return
                 try:
                     accepted = self.client.paste_clipboard(paste_after=True)
                     self.status.set("Enviando área de transferência…" if accepted is not False
@@ -411,12 +446,13 @@ class Viewer(tk.Toplevel):
             except (ValueError, tk.TclError):
                 self.status.set("Clipboard indisponível ou acima de 100 KiB.")
 
-    def copy(self, *, copy_first=False):
+    def copy(self, *, copy_first=False, cut=False):
         if self.clip and not self.pending_copy:
             self.pending_copy = True
             if Viewer.rich_clipboard(self):
                 try:
-                    accepted = self.client.copy_clipboard(copy_first=copy_first)
+                    accepted = (self.client.copy_clipboard(copy_first=copy_first, cut=True) if cut
+                                else self.client.copy_clipboard(copy_first=copy_first))
                     if accepted is False:
                         self.pending_copy = False
                     self.status.set("Recebendo área de transferência…" if accepted is not False
@@ -470,15 +506,28 @@ class Viewer(tk.Toplevel):
                     self.keys[e.keycode] = None
                 return "break"
             k = protocol_key(e.keysym, e.char)
-            if e.state & 4 and k in ("v", "c") and self.clip and Viewer.rich_clipboard(self):
+            if (e.state & 4 and k in ("v", "c", "x") and self.clip and Viewer.rich_clipboard(self)
+                    and not (k == "v" and self.client.clipboard_from_remote() is True)
+                    and not (k == "x" and getattr(self.client, "clipboard_cut", False) is not True)):
                 self.keys[e.keycode] = None
-                (self.paste if k == "v" else lambda: self.copy(copy_first=True))()
+                if k == "v":
+                    self.paste()
+                else:
+                    self.copy(copy_first=True, cut=k == "x")
             elif e.state & 5 == 5 and k in ("v", "c"):
                 (self.paste if k == "v" else self.copy)()
             elif k:
                 if k not in self.keys.values():
                     self.client.send(dict(t="key", k=k, d="down"))
                 self.keys[e.keycode] = k
+        elif down:
+            # Tecla segurada: o Windows repete KeyPress sem KeyRelease; repete no PC remoto.
+            k = self.keys[e.keycode]
+            if k:
+                self.client.send(dict(t="key", k=k, d="down"))
+            elif (e.char and e.char.isprintable() and e.char not in KEYS
+                    and not e.keysym.startswith("dead_") and len(e.char) <= 500):
+                self.client.send(dict(t="text", s=e.char))
         elif not down:
             k = self.keys.pop(e.keycode, None)
             if k and k not in self.keys.values():
@@ -502,10 +551,32 @@ class Viewer(tk.Toplevel):
         self.client.send(msg)
         return True
 
-    def wheel(self, e, step):
-        if self.pointer(e, "move"):
-            horizontal = bool(e.state & 1)
-            self.client.send(dict(t="scroll", dx=step if horizontal else 0, dy=0 if horizontal else step))
+    def wheel(self, e, step=0, delta=None, horizontal=False):
+        """Rola no PC remoto. No pynput, dy > 0 sobe e dx > 0 vai para a direita."""
+        if not self.pointer(e, "move"):
+            return
+        shifted = not horizontal and bool(e.state & 1)
+        if delta is not None:
+            # Windows/macOS: acumula e envia um entalhe a cada 120 (touchpads mandam frações).
+            import sys
+            unit = 1 if sys.platform == "darwin" and tk.TkVersion < 8.7 else 120
+            axis = "x" if shifted else "y"
+            acc = getattr(self, "wheel_acc", None)
+            if not isinstance(acc, dict):
+                acc = self.wheel_acc = {"x": 0, "y": 0}
+            if acc[axis] * delta < 0:  # mudou de sentido: descarta a sobra
+                acc[axis] = 0
+            acc[axis] += delta
+            step = int(acc[axis] / unit)
+            acc[axis] -= step * unit
+        if shifted:
+            step = -step  # Shift+roda para cima = esquerda
+        while step:
+            part = max(-20, min(20, step))
+            step -= part
+            horizontal_scroll = horizontal or shifted
+            self.client.send(dict(t="scroll", dx=part if horizontal_scroll else 0,
+                                  dy=0 if horizontal_scroll else part))
 
     def release(self):
         for k in set(self.keys.values()) - {None}:
@@ -623,6 +694,10 @@ class Viewer(tk.Toplevel):
                     self.status.set(str(value)[:500])
                 elif kind in ("clipboard_ok", "clipboard_error"):
                     self.clipboard_result(kind, value)
+                elif kind in FILE_RESULTS:
+                    self.uploading = False
+                    self.progress = None
+                    self.status.set(FILE_RESULTS[kind])
                 elif kind in ("end", "error"):
                     self.blank()
                     self.clip = False

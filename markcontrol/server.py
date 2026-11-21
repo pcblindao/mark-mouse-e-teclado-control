@@ -223,12 +223,12 @@ class Agent:
         control = self.clipboard_control(request)
         if request.method == "PUT" and control.view_only:
             raise web.HTTPForbidden()
-        if set(request.query) - {"copy_first", "paste_after"}:
+        if set(request.query) - {"copy_first", "paste_after", "cut"}:
             raise web.HTTPBadRequest()
         for key in request.query:
             if len(request.query.getall(key)) != 1 or request.query[key] not in ("0", "1"):
                 raise web.HTTPBadRequest()
-        if request.method == "GET" and "paste_after" in request.query or request.method == "PUT" and "copy_first" in request.query:
+        if request.method == "GET" and "paste_after" in request.query or request.method == "PUT" and ("copy_first" in request.query or "cut" in request.query):
             raise web.HTTPBadRequest()
         if request.query.get("copy_first") == "1" and control.view_only:
             raise web.HTTPForbidden()
@@ -241,7 +241,10 @@ class Agent:
                 return await asyncio.wait_for(self.clipboard_exchange(request, control), 300)
         except asyncio.TimeoutError:
             raise web.HTTPRequestTimeout() from None
-        except (clipboard.ClipboardError, ValueError, OSError) as exc:
+        except clipboard.ClipboardError as exc:
+            event("clipboard_failed", exc)
+            raise web.HTTPBadRequest(text=str(exc)[:200] or "Área de transferência indisponível.") from None
+        except (ValueError, OSError) as exc:
             event("clipboard_failed", exc)
             raise web.HTTPBadRequest(text="Área de transferência indisponível.") from None
 
@@ -267,9 +270,11 @@ class Agent:
                 if request.method == "GET":
                     if request.query.get("copy_first") == "1":
                         sequence = await asyncio.to_thread(clipboard.sequence_number)
-                        await self.clipboard_shortcut(control, "c", active)
+                        # Ctrl+X recorta no remoto e traz o conteúdo, como Ctrl+C.
+                        letter = "x" if request.query.get("cut") == "1" else "c"
+                        await self.clipboard_shortcut(control, letter, active)
                         await asyncio.sleep(0.05)
-                        deadline = time.monotonic() + 0.5
+                        deadline = time.monotonic() + 1.5
                         while sequence is not None and time.monotonic() < deadline:
                             check()
                             if await asyncio.to_thread(clipboard.sequence_number) != sequence:
@@ -411,7 +416,8 @@ class Agent:
                         "features": {"files": self.allow_files, "view_only": True, "combo": True,
                                      "chat": True, "wol": bool(self.mac), "history": True,
                                      "clipboard": self.allow_clipboard, "high_fps": True,
-                                     "stream_resolution": True, "clipboard_rich": True},
+                                     "stream_resolution": True, "clipboard_rich": True,
+                                     "clipboard_cut": True},
                         **({"mac": self.mac} if self.mac else {}),
                         "monitors": count, "monitor": monitor, "clipboard": self.allow_clipboard,
                         "frame_size": capture.output_size(region["width"], region["height"], control.max_height),
@@ -488,9 +494,11 @@ class Agent:
                     await task
                     raise
             elif kind == "file_end":
-                control.upload.finish(payload["sha256"])
+                received = control.upload.finish(payload["sha256"])
                 control.discard_upload()
                 reply = "file_ok"
+                if received is not None:
+                    self.notify("warning", f"Arquivo recebido: {received}")
             elif kind == "file_cancel":
                 control.discard_upload()
                 reply = "file_cancelled"
