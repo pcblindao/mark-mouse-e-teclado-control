@@ -1,10 +1,13 @@
 import asyncio
+import hmac
 import errno
 import ipaddress
 import json
 import os
 import socket
 import time
+import tempfile
+import threading
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -14,10 +17,12 @@ from aiohttp import WSMsgType, web
 
 from . import capture, clipboard, history, wol
 from .filetransfer import Receiver
-from .certs import tls_identity
+from .certs import tls_identity, data_dir
 from .config import Config
 from .discovery import PORT, Discovery, local_addresses
 from .inputctl import Input
+from .clipboard_transport import CHUNK, MIME, blocking
+from .clipboard_bundle import MAX_BUNDLE_BYTES, create_bundle, apply_bundle, inspect_bundle_kind
 from .diagnostics import event
 from .updater import session_lease
 from .security import MAX_MESSAGE, Authorization, Session, _object, decode_message, private_ip, valid_chat
@@ -32,7 +37,7 @@ async def local_https(request, handler):
         raise web.HTTPForbidden()
     request["peer"] = peer[0]
     request["scope_id"] = peer[3] if len(peer) == 4 else 0
-    if request.path in ("/api/login", "/ws"):
+    if request.path in ("/api/login", "/ws", "/api/clipboard"):
         origin = request.headers.get("Origin")
         # Clientes nativos podem omitir Origin. Navegadores devem usar a própria origem.
         if origin is not None and origin != f"https://{request.host}":
@@ -89,6 +94,7 @@ class Control:
     upload: Receiver | None = None
     used: set = field(default_factory=set)
     next_chat: float = 0
+    clipboard_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
     def use(self, kind):
         if kind not in self.used:
@@ -146,6 +152,145 @@ class Agent:
                 self.input.release_all()
             print(f"SESSAO ENCERRADA de {control.session.peer} ({reason})", flush=True)
 
+    def clipboard_control(self, request):
+        control = self.control
+        headers = request.headers.getall("X-Mark-Session", [])
+        supplied = headers[0] if len(headers) == 1 else ""
+        if (control is None or not control.session.alive() or not self.allow_clipboard
+                or request["peer"] != control.session.peer or len(supplied) != 64
+                or any(character not in "0123456789abcdef" for character in supplied)
+                or not hmac.compare_digest(supplied, control.session.token)):
+            raise web.HTTPForbidden()
+        if control.clipboard_lock.locked():
+            raise web.HTTPConflict()
+        return control
+
+    async def clipboard_shortcut(self, control, letter, active):
+        if not active() or control.view_only:
+            raise clipboard.ClipboardError("Área de transferência indisponível.")
+        names = ("Control", "Shift", "Alt", "AltGraph", "Meta")
+        modifiers = {self.input.keys[name] for name in names if name in self.input.keys}
+        held = set(self.input.held_keys) & modifiers
+        try:
+            await self.input.apply({"t": "combo", "keys": ["Ctrl", letter]}, control.region, active)
+        finally:
+            if active() and not control.view_only:
+                for key in held:
+                    self.input._press(self.input.keyboard, self.input.held_keys, key, "down")
+
+    async def clipboard_http(self, request):
+        if request.method not in ("GET", "PUT"):
+            raise web.HTTPMethodNotAllowed(request.method, ("GET", "PUT"))
+        control = self.clipboard_control(request)
+        if request.method == "PUT" and control.view_only:
+            raise web.HTTPForbidden()
+        if set(request.query) - {"copy_first", "paste_after"}:
+            raise web.HTTPBadRequest()
+        for key in request.query:
+            if len(request.query.getall(key)) != 1 or request.query[key] not in ("0", "1"):
+                raise web.HTTPBadRequest()
+        if request.method == "GET" and "paste_after" in request.query or request.method == "PUT" and "copy_first" in request.query:
+            raise web.HTTPBadRequest()
+        if request.query.get("copy_first") == "1" and control.view_only:
+            raise web.HTTPForbidden()
+        if request.method == "PUT" and (request.content_type != MIME or request.headers.get("Content-Encoding", "identity") != "identity"):
+            raise web.HTTPUnsupportedMediaType()
+        if request.content_length is not None and request.content_length > MAX_BUNDLE_BYTES:
+            raise web.HTTPRequestEntityTooLarge(max_size=MAX_BUNDLE_BYTES, actual_size=request.content_length)
+        try:
+            async with control.clipboard_lock:
+                return await asyncio.wait_for(self.clipboard_exchange(request, control), 300)
+        except asyncio.TimeoutError:
+            raise web.HTTPRequestTimeout() from None
+        except (clipboard.ClipboardError, ValueError, OSError) as exc:
+            event("clipboard_failed", exc)
+            raise web.HTTPBadRequest(text="Área de transferência indisponível.") from None
+
+    async def clipboard_exchange(self, request, control):
+        cancelled = threading.Event()
+        kind = None
+        response = None
+
+        def active():
+            return (not cancelled.is_set() and self.control is control and control.session.alive()
+                    and self.allow_clipboard and (request.method != "PUT" or not control.view_only)
+                    and (kind != "files" or self.allow_files))
+
+        def check():
+            if not active():
+                raise clipboard.ClipboardError("Área de transferência indisponível.")
+
+        try:
+            with tempfile.TemporaryDirectory(prefix="markcontrol-clipboard-") as folder:
+                path = Path(folder) / "clipboard.bundle"
+                check()
+                control.session.renew()
+                if request.method == "GET":
+                    if request.query.get("copy_first") == "1":
+                        sequence = await asyncio.to_thread(clipboard.sequence_number)
+                        await self.clipboard_shortcut(control, "c", active)
+                        await asyncio.sleep(0.05)
+                        deadline = time.monotonic() + 0.5
+                        while sequence is not None and time.monotonic() < deadline:
+                            check()
+                            if await asyncio.to_thread(clipboard.sequence_number) != sequence:
+                                break
+                            await asyncio.sleep(0.02)
+                    payload = await clipboard.read_payload(active)
+                    kind = payload.kind
+                    if kind == "files" and not self.allow_files:
+                        raise web.HTTPForbidden()
+                    check()
+                    await blocking(create_bundle, payload, path, active, cancelled=cancelled)
+                    check()
+                    size = path.stat().st_size
+                    if size > MAX_BUNDLE_BYTES:
+                        raise clipboard.ClipboardError("Área de transferência acima do limite.")
+                    response = web.StreamResponse(headers={"Content-Type": MIME, "Content-Length": str(size),
+                        "Content-Disposition": 'attachment; filename="clipboard.bundle"',
+                        "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"})
+                    await response.prepare(request)
+                    with path.open("rb") as source:
+                        while True:
+                            check()
+                            data = await blocking(source.read, CHUNK, cancelled=cancelled)
+                            if not data:
+                                break
+                            await response.write(data)
+                    await response.write_eof()
+                    return response
+                received = 0
+                with path.open("xb") as output:
+                    while True:
+                        check()
+                        data = await asyncio.wait_for(request.content.read(CHUNK), 30)
+                        if not data:
+                            break
+                        received += len(data)
+                        if received > MAX_BUNDLE_BYTES:
+                            raise web.HTTPRequestEntityTooLarge(max_size=MAX_BUNDLE_BYTES, actual_size=received)
+                        await blocking(output.write, data, cancelled=cancelled)
+                check()
+                kind = await blocking(inspect_bundle_kind, path, cancelled=cancelled)
+                if kind == "files" and not self.allow_files:
+                    raise web.HTTPForbidden()
+                check()
+                payload = await blocking(apply_bundle, path, data_dir() / "clipboard-received", active, cancelled=cancelled)
+                check()
+                await clipboard.write_payload(payload, active)
+                check()
+                if request.query.get("paste_after") == "1":
+                    await self.clipboard_shortcut(control, "v", active)
+                control.use("clipboard_rich")
+                control.session.renew()
+                return web.json_response({"ok": True})
+        except BaseException:
+            if response is not None and response.prepared and request.transport is not None:
+                request.transport.close()
+            raise
+        finally:
+            cancelled.set()
+
     def stop_active(self, reason):
         self.auth.pending = None
         if self.control is not None:
@@ -191,7 +336,7 @@ class Agent:
                         "features": {"files": self.allow_files, "view_only": True, "combo": True,
                                      "chat": True, "wol": bool(self.mac), "history": True,
                                      "clipboard": self.allow_clipboard, "high_fps": True,
-                                     "stream_resolution": True},
+                                     "stream_resolution": True, "clipboard_rich": True},
                         **({"mac": self.mac} if self.mac else {}),
                         "monitors": count, "monitor": monitor, "clipboard": self.allow_clipboard,
                         "frame_size": capture.output_size(region["width"], region["height"], control.max_height),
@@ -454,6 +599,8 @@ async def run(args, stopping, notify):
     app = web.Application(middlewares=[local_https], client_max_size=1024)
     app.router.add_post("/api/login", agent.login)
     app.router.add_get("/ws", agent.websocket)
+    app.router.add_get("/api/clipboard", agent.clipboard_http, allow_head=False)
+    app.router.add_put("/api/clipboard", agent.clipboard_http)
 
     async def asset(request):
         name = request.match_info.get("asset", "") or "index.html"

@@ -6,6 +6,7 @@ import stat
 import re
 import threading
 import time
+import tempfile
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from collections.abc import Callable
@@ -22,6 +23,10 @@ from .updater import session_lease
 from .wol import mac_bytes
 from .trust import Changed, Trust
 from .diagnostics import event
+from . import clipboard
+from .certs import data_dir
+from .clipboard_transport import CHUNK, MIME, blocking
+from .clipboard_bundle import MAX_BUNDLE_BYTES, create_bundle, apply_bundle, inspect_bundle_kind
 
 
 class NeedPin(ValueError):
@@ -67,11 +72,130 @@ class Client:
         self._loop = self._write_ready = None
         self.frame_epoch = 0
         self.decode_ms = 0
+        self.clipboard_rich = self._clipboard_enabled = False
+        self._clipboard_read_only = self._clipboard_busy = False
+        self._clipboard_context = self._clipboard_task = None
 
     def set_view_only(self, enabled):
         if type(enabled) is not bool:
             raise ValueError("Modo inválido.")
+        self._clipboard_read_only = enabled
         self.send({"t": "view_only", "enabled": enabled})
+
+    def paste_clipboard(self, paste_after=False):
+        return self._schedule_clipboard("paste", paste_after)
+
+    def copy_clipboard(self, copy_first=False):
+        return self._schedule_clipboard("copy", copy_first)
+
+    def _schedule_clipboard(self, direction, shortcut):
+        if type(shortcut) is not bool:
+            raise ValueError("Opção de área de transferência inválida.")
+        with self._lock:
+            context = self._clipboard_context
+            if (context is None or self.closed.is_set() or not self.clipboard_rich or not self._clipboard_enabled
+                    or self._clipboard_read_only and (direction == "paste" or shortcut)):
+                raise ValueError("Área de transferência indisponível nesta sessão.")
+            if self._clipboard_busy:
+                return False
+            self._clipboard_busy = True
+            operation = self._transfer_clipboard(context, direction, shortcut)
+            try:
+                asyncio.run_coroutine_threadsafe(operation, context[0])
+            except RuntimeError:
+                operation.close()
+                self._clipboard_busy = False
+                raise ValueError("Sessão encerrada.") from None
+        return True
+
+    async def _transfer_clipboard(self, context, direction, shortcut):
+        loop, http, fingerprint, base, token = context
+        self._clipboard_task = asyncio.current_task()
+        cancelled = threading.Event()
+        kind = None
+
+        def active():
+            return (not cancelled.is_set() and self._clipboard_context is context and not self.closed.is_set()
+                    and self._clipboard_enabled and (direction != "paste" or not self._clipboard_read_only)
+                    and (kind != "files" or self.files))
+
+        def check():
+            if not active():
+                raise clipboard.ClipboardError("Área de transferência indisponível.")
+
+        try:
+            with tempfile.TemporaryDirectory(prefix="markcontrol-clipboard-") as folder:
+                path = Path(folder) / "clipboard.bundle"
+                check()
+                headers = {"X-Mark-Session": token}
+                timeout = aiohttp.ClientTimeout(total=300, sock_connect=5, sock_read=30)
+                url = f"https://{base}/api/clipboard"
+                if direction == "paste":
+                    payload = await clipboard.read_payload(active)
+                    kind = payload.kind
+                    check()
+                    await blocking(create_bundle, payload, path, active, cancelled=cancelled)
+                    check()
+                    size = path.stat().st_size
+                    if size > MAX_BUNDLE_BYTES:
+                        raise clipboard.ClipboardError("Área de transferência acima do limite.")
+
+                    async def body():
+                        with path.open("rb") as source:
+                            while True:
+                                check()
+                                data = await blocking(source.read, CHUNK, cancelled=cancelled)
+                                if not data:
+                                    return
+                                yield data
+
+                    headers.update({"Content-Type": MIME, "Content-Length": str(size)})
+                    async with http.put(url, params={"paste_after": "1" if shortcut else "0"},
+                                        headers=headers, data=body(), ssl=fingerprint, allow_redirects=False,
+                                        timeout=timeout) as response:
+                        if response.status != 200:
+                            raise clipboard.ClipboardError("Área de transferência recusada.")
+                        length = response.content_length
+                        if length is None or not 0 < length <= 1024:
+                            raise clipboard.ClipboardError("Confirmação de transferência inválida.")
+                        raw = await response.content.readexactly(length)
+                        if json.loads(raw) != {"ok": True}:
+                            raise clipboard.ClipboardError("Confirmação de transferência inválida.")
+                else:
+                    async with http.get(url, params={"copy_first": "1" if shortcut else "0"},
+                                        headers=headers, ssl=fingerprint, allow_redirects=False,
+                                        timeout=timeout) as response:
+                        if (response.status != 200 or response.content_type != MIME
+                                or response.content_length is not None and response.content_length > MAX_BUNDLE_BYTES):
+                            raise clipboard.ClipboardError("Área de transferência recusada.")
+                        received = 0
+                        with path.open("xb") as output:
+                            async for data in response.content.iter_chunked(CHUNK):
+                                check()
+                                received += len(data)
+                                if received > MAX_BUNDLE_BYTES:
+                                    raise clipboard.ClipboardError("Área de transferência acima do limite.")
+                                await blocking(output.write, data, cancelled=cancelled)
+                    check()
+                    kind = await blocking(inspect_bundle_kind, path, cancelled=cancelled)
+                    check()
+                    payload = await blocking(apply_bundle, path, data_dir() / "clipboard-received", active, cancelled=cancelled)
+                    check()
+                    await clipboard.write_payload(payload, active)
+                if self._clipboard_context is context and not self.closed.is_set():
+                    await self.emit("clipboard_ok", {"direction": direction, "kind": kind})
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            event("clipboard_failed", exc)
+            if self._clipboard_context is context and not self.closed.is_set():
+                await self.emit("clipboard_error", "Não foi possível transferir a área de transferência. Verifique a conexão e as permissões.")
+        finally:
+            cancelled.set()
+            with self._lock:
+                self._clipboard_busy = False
+            if self._clipboard_task is asyncio.current_task():
+                self._clipboard_task = None
 
     def send_combo(self, keys):
         if keys not in COMBOS:
@@ -313,6 +437,7 @@ class Client:
                                        max_msg_size=32 << 20) as ws:
                 if ws.protocol != "markcontrol":
                     raise ValueError("Protocolo inesperado.")
+                self._clipboard_context = (asyncio.get_running_loop(), http, fingerprint, base, token)
                 replies = asyncio.Queue(1)
                 encoded, frame_ready = [], asyncio.Event()
 
@@ -351,6 +476,10 @@ class Client:
                                     if "mac" in message:
                                         mac_bytes(message["mac"])
                                     self.files = caps.get("files", False)
+                                    self.clipboard_rich = caps.get("clipboard_rich", False)
+                                    self._clipboard_enabled = message.get("clipboard") is True
+                                elif kind == "view_only":
+                                    self._clipboard_read_only = message.get("enabled") is True
                                 await self.emit("message", message)
                         elif packet.type == aiohttp.WSMsgType.ERROR:
                             raise ValueError("Conexão interrompida.")
@@ -363,6 +492,10 @@ class Client:
                     for task in done:
                         task.result()
                 finally:
+                    self._clipboard_context = None
+                    if self._clipboard_task is not None:
+                        self._clipboard_task.cancel()
+                        await asyncio.gather(self._clipboard_task, return_exceptions=True)
                     for task in tasks:
                         task.cancel()
                     await asyncio.gather(*tasks, return_exceptions=True)

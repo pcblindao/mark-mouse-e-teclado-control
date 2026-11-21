@@ -4,7 +4,7 @@ import re
 EVENTS = frozenset({"startup", "startup_failed", "agent_failed", "tray_failed", "tray_ready",
                     "tray_update_failed", "window_hidden_in_tray", "window_minimized_without_tray",
                     "tray_notification_failed", "ui_callback_failed", "remote_operation_failed",
-                    "file_transfer_failed", "diagnostic_browser_failed", "viewer_failed", "capture_failed", "session_failed", "input_release_failed", "autostart_failed", "config_failed",
+                    "file_transfer_failed", "diagnostic_browser_failed", "viewer_failed", "capture_failed", "session_failed", "input_release_failed", "autostart_failed", "config_failed", "clipboard_failed",
                     "update_check", "update_verified", "update_failed", "update_applied", "update_rollback",
                     "session_started", "session_ended", "viewer_connected", "viewer_stats", "stream_stats"})
 ERRORS = frozenset(name for name in EVENTS if name.endswith("_failed"))

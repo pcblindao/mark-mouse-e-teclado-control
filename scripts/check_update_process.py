@@ -44,16 +44,24 @@ try:
     elif sys.argv[1] == "--candidate":
         if VERSION == "0.6.0" and os.environ.get("PROBE_FAIL") == "exit":
             raise SystemExit(71)
+        from markcontrol import installation
+        startup = installation.bootstrap([])
+        if startup.exit_code is not None:
+            raise RuntimeError("Updater candidate was relocated or refused")
+        installation.mark_ready()
         state = json.loads(os.environ[u.RESUME])
         (root / "result.json").write_text(json.dumps({
             "version": VERSION, "requested_version": state["version"],
             "active": state["active"], "headless": state["headless"],
-            "window": state["window"], "pid": os.getpid()}))
+            "window": state["window"], "pid": os.getpid(),
+            "same_target_path": Path(sys.executable).resolve() == (root / "app.exe").resolve(),
+            "single_instance_acquired": startup.instance is not None}))
         if state["version"] == VERSION:
             (Path(state["stage"]) / "ready").write_text(VERSION)
         deadline = time.monotonic() + 120
         while not (root / "exit-candidate").exists() and time.monotonic() < deadline:
             time.sleep(0.05)
+        startup.close()
 except Exception as exc:
     (root / "probe-error").write_text(type(exc).__name__)
     raise SystemExit(91)
@@ -148,8 +156,10 @@ def scenario(folder, old, new, key, mode):
         assert result["version"] == ("0.5.0" if mode == "rollback" else "0.6.0")
         assert result["requested_version"] == ("" if mode == "rollback" else "0.6.0")
         assert result["active"] is True and result["headless"] is True and result["window"] == "withdrawn"
+        assert result["same_target_path"] and result["single_instance_acquired"]
         return {"scenario": mode, "verified": True, "restored_version": result["version"],
-                "active_preserved": True, "hidden_state_preserved": True}
+                "active_preserved": True, "hidden_state_preserved": True,
+                "updater_resume_not_relocated": True, "single_instance_acquired": True}
     finally:
         (root / "exit-parent").touch()
         (root / "exit-candidate").touch()

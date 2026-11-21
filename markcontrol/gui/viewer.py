@@ -286,6 +286,7 @@ class Viewer(tk.Toplevel):
         self.features = ()
         self.view_only = False
         self.online = False
+        self.pending_copy = False
         self.client = Client(self.peer)
         self.refresh_tools()
         self.configure_canvas()
@@ -385,8 +386,20 @@ class Viewer(tk.Toplevel):
                     self.status.set("Use até 500 caracteres válidos.")
             self.entry("Enviar texto", submit)
 
+    def rich_clipboard(self):
+        caps = getattr(self, "features", {})
+        return isinstance(caps, dict) and caps.get("clipboard_rich") is True
+
     def paste(self):
         if self.clip and not self.view_only:
+            if Viewer.rich_clipboard(self):
+                try:
+                    accepted = self.client.paste_clipboard(paste_after=True)
+                    self.status.set("Enviando área de transferência…" if accepted is not False
+                                    else "Aguarde a transferência atual terminar.")
+                except (ValueError, OSError):
+                    self.status.set("Não foi possível enviar a área de transferência.")
+                return
             try:
                 value = self.clipboard_get()
                 check_text(value)
@@ -394,10 +407,35 @@ class Viewer(tk.Toplevel):
             except (ValueError, tk.TclError):
                 self.status.set("Clipboard indisponível ou acima de 100 KiB.")
 
-    def copy(self):
+    def copy(self, *, copy_first=False):
         if self.clip and not self.pending_copy:
             self.pending_copy = True
+            if Viewer.rich_clipboard(self):
+                try:
+                    accepted = self.client.copy_clipboard(copy_first=copy_first)
+                    if accepted is False:
+                        self.pending_copy = False
+                    self.status.set("Recebendo área de transferência…" if accepted is not False
+                                    else "Aguarde a transferência atual terminar.")
+                except (ValueError, OSError):
+                    self.pending_copy = False
+                    self.status.set("Não foi possível receber a área de transferência.")
+                return
             self.client.send(dict(t="clip_get"))
+
+    def clipboard_result(self, kind, value):
+        self.pending_copy = False
+        if kind == "clipboard_error":
+            self.status.set(str(value))
+            return
+        direction = value.get("direction") if isinstance(value, dict) else None
+        content = value.get("kind") if isinstance(value, dict) else None
+        if direction == "copy":
+            label = {"text": "Texto disponível", "image": "Imagem disponível", "files": "Arquivos disponíveis"}.get(content, "Conteúdo disponível")
+            self.status.set(label + " para colar neste PC.")
+        else:
+            label = {"text": "Texto enviado", "image": "Imagem enviada", "files": "Arquivos enviados"}.get(content, "Conteúdo enviado")
+            self.status.set(label + " ao outro PC.")
 
     def quality(self, switching=False):
         if switching:
@@ -428,7 +466,10 @@ class Viewer(tk.Toplevel):
                     self.keys[e.keycode] = None
                 return "break"
             k = protocol_key(e.keysym, e.char)
-            if e.state & 5 == 5 and k in ("v", "c"):
+            if e.state & 4 and k in ("v", "c") and self.clip and Viewer.rich_clipboard(self):
+                self.keys[e.keycode] = None
+                (self.paste if k == "v" else lambda: self.copy(copy_first=True))()
+            elif e.state & 5 == 5 and k in ("v", "c"):
                 (self.paste if k == "v" else self.copy)()
             elif k:
                 if k not in self.keys.values():
@@ -574,9 +615,12 @@ class Viewer(tk.Toplevel):
                     self.identity(value)
                 elif kind == "chat":
                     self.status.set(str(value)[:500])
+                elif kind in ("clipboard_ok", "clipboard_error"):
+                    self.clipboard_result(kind, value)
                 elif kind in ("end", "error"):
                     self.blank()
                     self.clip = False
+                    self.pending_copy = False
                     self.status.set(value or "Sessão encerrada.")
         except Empty:
             pass

@@ -9,7 +9,7 @@ import webbrowser
 from queue import Empty, SimpleQueue
 from tkinter import messagebox
 
-from .. import diagnostics, telemetry, updater
+from .. import diagnostics, telemetry, updater, installation
 from ..version import __version__
 from ..agent_runner import AgentRunner
 from ..config import Config
@@ -634,6 +634,11 @@ class App:
         self.root.title(TITLE)
 
     def poll(self):
+        for action in installation.actions():
+            if action == "shutdown":
+                self.close()
+            elif action == "open" and not self.done.is_set():
+                self.tray_action("open")
         try:
             while True:
                 kind, value = self.runner.events.get_nowait()
@@ -724,6 +729,7 @@ def launch(args, headless, auto):
             not app.activation_configured and auto and autostart.enabled()):
         app.desired_active = True
         app.toggle_agent(persist=False)
+    installation.mark_ready()
     try:
         root.mainloop()
     finally:

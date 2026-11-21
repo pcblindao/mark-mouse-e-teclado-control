@@ -33,7 +33,7 @@ jobs:
         with:
           python-version: "3.12"
       - run: ./scripts/build.ps1
-      - name: Confere que o executável abre e continua executando ao recolher
+      - name: Confere instalação única, abertura e recolhimento
         shell: pwsh
         run: |
           $env:LOCALAPPDATA = Join-Path $env:RUNNER_TEMP 'markcontrol-smoke'
@@ -41,22 +41,37 @@ jobs:
           New-Item -ItemType Directory -Path $configDir -Force | Out-Null
           '{"version":2,"enabled":false}' | Set-Content (Join-Path $configDir 'diagnostic-consent.json') -Encoding ascii
           $exe = (Resolve-Path 'dist\Mark Mouse e Teclado Control.exe').Path
+          $canonical = Join-Path $env:LOCALAPPDATA 'Programs\MarkControl\MarkMouseTecladoControl.exe'
           $launcher = Start-Process -FilePath $exe -PassThru
           try {
               $deadline = (Get-Date).AddSeconds(60)
               do {
-                  $window = Get-Process -Name 'Mark Mouse e Teclado Control' -ErrorAction SilentlyContinue |
-                      Where-Object { $_.Path -eq $exe -and
+                  $window = Get-Process -Name 'MarkMouseTecladoControl' -ErrorAction SilentlyContinue |
+                      Where-Object { $_.Path -eq $canonical -and
                                      $_.MainWindowTitle -eq 'Mark Mouse e Teclado Control' } |
                       Select-Object -First 1
-                  if ($window -or $launcher.HasExited) { break }
+                  if ($window) { break }
                   Start-Sleep -Milliseconds 250
               } while ((Get-Date) -lt $deadline)
               if (-not $window) { throw 'A janela principal do Mark Mouse e Teclado Control não abriu.' }
+              if (-not $launcher.WaitForExit(15000) -or $launcher.ExitCode -ne 0) {
+                  throw 'A instalação não encerrou o inicializador corretamente.'
+              }
               if (-not $window.CloseMainWindow()) { throw 'A janela não aceitou o pedido de recolher.' }
               Start-Sleep -Milliseconds 1500
-              if ($launcher.HasExited) { throw 'O aplicativo encerrou ao recolher a janela.' }
+              $window.Refresh()
+              if ($window.HasExited) { throw 'O aplicativo encerrou ao recolher a janela.' }
+              $second = Start-Process -FilePath $exe -PassThru
+              if (-not $second.WaitForExit(15000) -or $second.ExitCode -ne 0) {
+                  throw 'A segunda abertura não reutilizou a instalação.'
+              }
+              Start-Sleep -Milliseconds 1000
+              $visible = @(Get-Process -Name 'MarkMouseTecladoControl' -ErrorAction SilentlyContinue |
+                  Where-Object { $_.Path -eq $canonical -and $_.MainWindowTitle -eq 'Mark Mouse e Teclado Control' })
+              if ($visible.Count -ne 1) { throw 'A segunda abertura criou outra janela ou não restaurou a existente.' }
           } finally {
+              Get-Process -Name 'MarkMouseTecladoControl' -ErrorAction SilentlyContinue |
+                  Where-Object { $_.Path -eq $canonical } | Stop-Process -Force -ErrorAction SilentlyContinue
               if (-not $launcher.HasExited) {
                   taskkill /PID $launcher.Id /T /F | Out-Null
               }

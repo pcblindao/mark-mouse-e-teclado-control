@@ -52,7 +52,7 @@ A tabela mostra o que está disponível na versão publicada e o que está previ
 | Vários monitores | Permite escolher o monitor remoto para ver e controlar. | Disponível |
 | Mouse | Movimento, clique, arraste e rolagem vertical e horizontal. | Disponível |
 | Teclado | Digitação direta. A caixa Digitar texto envia até 500 caracteres, incluindo acentos. | Disponível |
-| Área de transferência | Colar no remoto e Copiar do remoto aceitam até 100 KiB de texto. Os atalhos são `Ctrl+Shift+V` e `Ctrl+Shift+C`. Dá para desligar o recurso. | Disponível |
+| Área de transferência | Texto, prints/imagens e arquivos/pastas nos dois sentidos no app desktop. Ctrl+C/Ctrl+V e botões, com permissões e limites. | Disponível na v0.7.0 |
 | Indicadores | Mostra latência, quadros recebidos e qualidade durante a sessão. | Disponível |
 | Pelo navegador | Abra `https://IP_DO_PC:47801/` para controlar o PC pelo navegador. | Disponível |
 | Iniciar com o Windows | Pode abrir e ativar o controle no login do usuário. | Disponível |
@@ -121,7 +121,7 @@ Veja a [arquitetura](docs/ARQUITETURA.md) e a [lista completa de funcionalidades
 3. Faça o mesmo no outro PC.
 4. Na primeira vez que clicar em **Ativar**, o Firewall do Windows pede permissão. Marque somente Redes privadas e clique em Permitir acesso.
 
-O executável único é a opção oficial para Windows. O instalador está previsto.
+O executável é a opção oficial para Windows. Na v0.7.0 ele instala uma única cópia no perfil do usuário, substitui o programa preservando configurações e aceites e reutiliza a instância em execução.
 
 ### Linux (X11)
 
@@ -236,3 +236,7 @@ Distribuído sob a [licença MIT](LICENSE).
 ## Atualização 0.6.0
 
 Baixe esta versão uma vez nos dois PCs. Versões anteriores não tinham o atualizador habilitado corretamente no executável direto. A partir da v0.6.0, atualizações assinadas são verificadas automaticamente quando habilitadas e há internet, aguardam a sessão terminar e preservam Ativo. Ativar também configura início com o sistema; Desativar e Sair continuam disponíveis. Consulte a [auditoria e validação](docs/AUDITORIA-0.6.0.md) e [diagnósticos](docs/DIAGNOSTICOS.md).
+
+## Atualização 0.7.0
+
+Área de transferência de texto, prints/imagens e arquivos/pastas no aplicativo desktop, nos dois sentidos. Instalação Windows canônica e instância única preservam as configurações e aceites já existentes. A v0.6.0 recebe esta versão pelo atualizador assinado ao finalizar as sessões; a migração canônica dessa transição acontece na próxima abertura normal. Consulte [uso, limites e validação](docs/CLIPBOARD-INSTALACAO-0.7.0.md). O consentimento de diagnósticos continua na versão2.
